@@ -1,0 +1,119 @@
+export type GameId =
+  | "gomoku"
+  | "word-chain"
+  | "drawing"
+  | "chosung"
+  | "same-answer"
+  | "liar"
+  | "connect-four"
+  | "chess"
+  | "push-out";
+
+export type GameInfo = {
+  id: GameId;
+  name: string;
+  shortName: string;
+  description: string;
+  minPlayers: number;
+  maxPlayers: number;
+  accent: string;
+  icon: string;
+};
+
+export const GAME_CATALOG: GameInfo[] = [
+  {
+    id: "gomoku",
+    name: "오목",
+    shortName: "오목",
+    description: "돌 다섯 개를 먼저 이으면 승리",
+    minPlayers: 2,
+    maxPlayers: 2,
+    accent: "#facc15",
+    icon: "●○",
+  },
+  {
+    id: "word-chain",
+    name: "끝말잇기",
+    shortName: "끝말잇기",
+    description: "마지막 글자로 단어를 이어가기",
+    minPlayers: 2,
+    maxPlayers: 10,
+    accent: "#38bdf8",
+    icon: "사↻과",
+  },
+  {
+    id: "drawing",
+    name: "그림 맞히기",
+    shortName: "그림",
+    description: "그림을 그리고 가장 먼저 정답 맞히기",
+    minPlayers: 2,
+    maxPlayers: 10,
+    accent: "#fb7185",
+    icon: "✎",
+  },
+  {
+    id: "chosung",
+    name: "초성 퀴즈",
+    shortName: "초성",
+    description: "시간이 흐를수록 공개되는 힌트 퀴즈",
+    minPlayers: 2,
+    maxPlayers: 10,
+    accent: "#60a5fa",
+    icon: "ㄱㄴㄷ",
+  },
+  {
+    id: "same-answer",
+    name: "같은 답 피하기",
+    shortName: "답 피하기",
+    description: "남들과 겹치지 않는 답을 적기",
+    minPlayers: 3,
+    maxPlayers: 10,
+    accent: "#c084fc",
+    icon: "≠",
+  },
+  {
+    id: "liar",
+    name: "라이어 게임",
+    shortName: "라이어",
+    description: "같은 단어 사이에 숨은 라이어 찾기",
+    minPlayers: 4,
+    maxPlayers: 10,
+    accent: "#f43f5e",
+    icon: "◉◉◉",
+  },
+  {
+    id: "connect-four",
+    name: "사목",
+    shortName: "사목",
+    description: "떨어뜨린 돌 네 개를 먼저 연결",
+    minPlayers: 2,
+    maxPlayers: 2,
+    accent: "#f97316",
+    icon: "●●●●",
+  },
+  {
+    id: "chess",
+    name: "체스",
+    shortName: "체스",
+    description: "가볍게 즐기는 캐주얼 체스",
+    minPlayers: 2,
+    maxPlayers: 2,
+    accent: "#94a3b8",
+    icon: "♞",
+  },
+  {
+    id: "push-out",
+    name: "밀어내기",
+    shortName: "밀어내기",
+    description: "원형 경기장에서 끝까지 살아남기",
+    minPlayers: 2,
+    maxPlayers: 10,
+    accent: "#22c55e",
+    icon: "☝",
+  },
+];
+
+export const GAME_BY_ID = Object.fromEntries(
+  GAME_CATALOG.map((game) => [game.id, game]),
+) as Record<GameId, GameInfo>;
+
