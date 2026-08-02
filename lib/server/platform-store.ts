@@ -1,219 +1,192 @@
-import { env } from "cloudflare:workers";
 import { GAME_BY_ID, GAME_CATALOG, type GameId } from "../games/catalog.ts";
-import { advanceTimedGame, createGame, projectGame, reduceGame, removePlayerFromGame, type GameCommand, type GameEnvelope, type GameOptions } from "../games/engine.ts";
+import {
+  advanceTimedGame,
+  createGame,
+  projectGame,
+  reduceGame,
+  removePlayerFromGame,
+  type GameCommand,
+  type GameEnvelope,
+  type GameOptions,
+} from "../games/engine.ts";
 import { isKnownWord } from "./word-dictionary.ts";
 
-let schemaReady = false;
-let lastMembershipCleanupAt = 0;
-
 type JsonRecord = Record<string, unknown>;
-type RoomListRow = JsonRecord & { settingsJson?: unknown; locked?: unknown; memberCount?: unknown; playerCount?: unknown };
-type RoomSnapshotRow = JsonRecord & { settingsJson?: unknown; locked?: unknown; status: string };
-type SessionRow = { stateJson: string; revision: number };
+type MemberRole = "player" | "spectator";
 
-function asRecord(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
-}
+type PlayerRecord = {
+  id: string;
+  nickname: string;
+  lastSeen: string;
+  createdAt: string;
+};
 
-const TABLE_STATEMENTS = [
-  `CREATE TABLE IF NOT EXISTS players (
-    id TEXT PRIMARY KEY,
-    nickname TEXT NOT NULL,
-    last_seen TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS players_nickname_idx ON players(nickname)`,
-  `CREATE INDEX IF NOT EXISTS players_last_seen_idx ON players(last_seen)`,
-  `CREATE TABLE IF NOT EXISTS rooms (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    game_id TEXT NOT NULL,
-    host_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'waiting',
-    capacity INTEGER NOT NULL DEFAULT 10,
-    password_hash TEXT,
-    settings_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS rooms_updated_at_idx ON rooms(updated_at DESC)`,
-  `CREATE TABLE IF NOT EXISTS room_members (
-    room_id TEXT NOT NULL,
-    player_id TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'player',
-    joined_at TEXT NOT NULL,
-    PRIMARY KEY (room_id, player_id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS room_members_player_idx ON room_members(player_id)`,
-  `CREATE TABLE IF NOT EXISTS game_sessions (
-    room_id TEXT PRIMARY KEY,
-    game_id TEXT NOT NULL,
-    state_json TEXT NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender_id TEXT NOT NULL,
-    recipient_id TEXT,
-    scope TEXT NOT NULL,
-    body TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS messages_scope_created_idx ON messages(scope, created_at DESC)`,
-  `CREATE INDEX IF NOT EXISTS messages_recipient_idx ON messages(recipient_id, created_at DESC)`,
-];
+type RoomRecord = {
+  id: string;
+  title: string;
+  gameId: GameId;
+  hostId: string;
+  status: "waiting" | "playing";
+  capacity: number;
+  passwordHash: string | null;
+  settings: GameOptions;
+  createdAt: string;
+  updatedAt: string;
+};
 
-function getD1(): D1Database {
-  if (!env.DB) throw new Error("온라인 저장소가 준비되지 않았습니다.");
-  return env.DB;
-}
+type MemberRecord = {
+  playerId: string;
+  role: MemberRole;
+  joinedAt: string;
+};
 
-async function ensureSchema() {
-  if (schemaReady) return getD1();
-  const db = getD1();
-  for (const statement of TABLE_STATEMENTS) await db.prepare(statement).run();
-  const roomColumns = (await db.prepare("PRAGMA table_info(rooms)").all()).results as Array<{ name: string }>;
-  if (!roomColumns.some((column) => column.name === "settings_json")) {
-    await db.prepare("ALTER TABLE rooms ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'").run();
-  }
-  schemaReady = true;
-  return db;
-}
+type SessionRecord = {
+  gameId: GameId;
+  state: GameEnvelope;
+  revision: number;
+  updatedAt: string;
+};
 
-function nowIso() {
-  return new Date().toISOString();
-}
+type MessageRecord = {
+  id: number;
+  senderId: string;
+  recipientId: string | null;
+  scope: "global" | "direct";
+  body: string;
+  createdAt: string;
+};
+
+type PlatformState = {
+  players: Record<string, PlayerRecord>;
+  rooms: Record<string, RoomRecord>;
+  members: Record<string, MemberRecord[]>;
+  sessions: Record<string, SessionRecord>;
+  messages: MessageRecord[];
+  nextMessageId: number;
+  lastMaintenanceAt: number;
+};
+
+type StoredState = {
+  revision: number;
+  data: PlatformState;
+};
+
+export type StateAuth = {
+  vercelOidcToken?: string | null;
+};
+
+type MutationResult<T> = { value: T; changed?: boolean };
 
 const FINISHED_RETURN_DELAY_MS = 3_600;
+const ONLINE_WINDOW_MS = 2 * 60_000;
+const HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
+const MAINTENANCE_INTERVAL_MS = 15_000;
+const MAX_MESSAGES = 500;
+const DEFAULT_SUPABASE_URL = "https://stusvfgazqxieybufdlc.supabase.co";
+const ROUND_GAMES = new Set<GameId>(["drawing", "chosung"]);
+const ALLOWED_ROUND_COUNTS = new Set([3, 5, 7, 10]);
 
-async function cleanupFinishedGames(db: D1Database) {
-  const cutoff = new Date(Date.now() - FINISHED_RETURN_DELAY_MS).toISOString();
-  const candidates = (await db.prepare(`SELECT room_id AS roomId, state_json AS stateJson
-    FROM game_sessions WHERE updated_at <= ?`).bind(cutoff).all()).results as Array<{ roomId: string; stateJson: string }>;
-  for (const candidate of candidates) {
-    try {
-      const game = JSON.parse(candidate.stateJson) as GameEnvelope;
-      if (game.phase !== "finished") continue;
-      const now = nowIso();
-      await db.batch([
-        db.prepare("DELETE FROM game_sessions WHERE room_id = ?").bind(candidate.roomId),
-        db.prepare("UPDATE rooms SET status = 'waiting', updated_at = ? WHERE id = ?").bind(now, candidate.roomId),
-      ]);
-      const room = await db.prepare("SELECT game_id AS gameId FROM rooms WHERE id = ?").bind(candidate.roomId).first<{ gameId: GameId }>();
-      if (room) await rebalanceRoomSeats(db, candidate.roomId, room.gameId);
-    } catch {
-      // A malformed session is left untouched for diagnosis instead of deleting user data.
-    }
+function emptyState(): PlatformState {
+  return {
+    players: {},
+    rooms: {},
+    members: {},
+    sessions: {},
+    messages: [],
+    nextMessageId: 1,
+    lastMaintenanceAt: 0,
+  };
+}
+
+function normalizeState(value: unknown): PlatformState {
+  const state = asRecord(value);
+  return {
+    players: asRecord(state.players) as Record<string, PlayerRecord>,
+    rooms: asRecord(state.rooms) as Record<string, RoomRecord>,
+    members: asRecord(state.members) as Record<string, MemberRecord[]>,
+    sessions: asRecord(state.sessions) as Record<string, SessionRecord>,
+    messages: Array.isArray(state.messages) ? state.messages as MessageRecord[] : [],
+    nextMessageId: Math.max(1, Number(state.nextMessageId) || 1),
+    lastMaintenanceAt: Number(state.lastMaintenanceAt) || 0,
+  };
+}
+
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonRecord
+    : {};
+}
+
+function getSupabaseConfig() {
+  const baseUrl = String(process.env.SUPABASE_URL ?? DEFAULT_SUPABASE_URL).replace(/\/$/, "");
+  const stateSecret = String(process.env.GAME_STATE_SECRET ?? "");
+  return { baseUrl, stateSecret };
+}
+
+function supabaseHeaders(auth?: StateAuth) {
+  const { stateSecret } = getSupabaseConfig();
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (stateSecret) headers["x-game-state-secret"] = stateSecret;
+  if (auth?.vercelOidcToken) headers["x-vercel-oidc-token"] = auth.vercelOidcToken;
+  return headers;
+}
+
+async function readState(auth?: StateAuth): Promise<StoredState> {
+  const { baseUrl } = getSupabaseConfig();
+  const response = await fetch(`${baseUrl}/functions/v1/game-platform-state`, {
+    method: "POST",
+    headers: supabaseHeaders(auth),
+    body: JSON.stringify({ action: "read" }),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`게임 저장소를 읽지 못했습니다. (${response.status}: ${detail.slice(0, 120)})`);
   }
+  const row = await response.json() as { revision: number; data: unknown };
+  if (!row || typeof row.revision !== "number") throw new Error("게임 저장소가 초기화되지 않았습니다.");
+  return { revision: Number(row.revision), data: normalizeState(row.data) };
 }
 
-async function rebalanceRoomSeats(db: D1Database, roomId: string, gameId: GameId) {
-  const members = (await db.prepare("SELECT player_id AS id FROM room_members WHERE room_id = ? ORDER BY joined_at")
-    .bind(roomId).all()).results as Array<{ id: string }>;
-  const maxPlayers = GAME_BY_ID[gameId].maxPlayers;
-  const updates = members.map((member, index) => db.prepare("UPDATE room_members SET role = ? WHERE room_id = ? AND player_id = ?")
-    .bind(index < maxPlayers ? "player" : "spectator", roomId, member.id));
-  if (updates.length) await db.batch(updates);
-}
-
-async function removeMemberFromRoom(db: D1Database, playerId: string, roomId: string) {
-  const room = await db.prepare("SELECT host_id AS hostId, status, game_id AS gameId FROM rooms WHERE id = ?")
-    .bind(roomId).first<{ hostId: string; status: string; gameId: GameId }>();
-  if (!room) return { interrupted: false };
-  const membership = await db.prepare("SELECT role FROM room_members WHERE room_id = ? AND player_id = ?")
-    .bind(roomId, playerId).first<{ role: string }>();
-  if (!membership) return { interrupted: false };
-
-  await db.prepare("DELETE FROM room_members WHERE room_id = ? AND player_id = ?").bind(roomId, playerId).run();
-  const members = (await db.prepare("SELECT player_id AS id, role FROM room_members WHERE room_id = ? ORDER BY joined_at")
-    .bind(roomId).all()).results as Array<{ id: string; role: string }>;
-  if (!members.length) {
-    await db.batch([
-      db.prepare("DELETE FROM game_sessions WHERE room_id = ?").bind(roomId),
-      db.prepare("DELETE FROM rooms WHERE id = ?").bind(roomId),
-    ]);
-    return { interrupted: room.status === "playing" };
+async function compareAndSwap(expectedRevision: number, data: PlatformState, auth?: StateAuth) {
+  const { baseUrl } = getSupabaseConfig();
+  const response = await fetch(`${baseUrl}/functions/v1/game-platform-state`, {
+    method: "POST",
+    headers: supabaseHeaders(auth),
+    body: JSON.stringify({
+      action: "cas",
+      expectedRevision,
+      data,
+    }),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`게임 저장소를 갱신하지 못했습니다. (${response.status}: ${detail.slice(0, 120)})`);
   }
+  const result = await response.json() as { updated?: boolean };
+  return result.updated === true;
+}
 
-  if (room.hostId === playerId) {
-    await db.prepare("UPDATE rooms SET host_id = ?, updated_at = ? WHERE id = ?").bind(members[0].id, nowIso(), roomId).run();
+async function mutateState<T>(
+  mutator: (state: PlatformState) => Promise<MutationResult<T>> | MutationResult<T>,
+  auth?: StateAuth,
+  attempts = 5,
+): Promise<{ value: T; state: PlatformState }> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const stored = await readState(auth);
+    const next = structuredClone(stored.data);
+    const result = await mutator(next);
+    if (result.changed === false) return { value: result.value, state: stored.data };
+    if (await compareAndSwap(stored.revision, next, auth)) return { value: result.value, state: next };
   }
-
-  let interrupted = false;
-  if (room.status === "playing" && membership.role === "player") {
-    const playerCount = members.filter((member) => member.role === "player").length;
-    const session = await db.prepare("SELECT state_json AS stateJson, revision FROM game_sessions WHERE room_id = ?")
-      .bind(roomId).first<{ stateJson: string; revision: number }>();
-    if (!session || playerCount < GAME_BY_ID[room.gameId].minPlayers) {
-      interrupted = true;
-      await db.batch([
-        db.prepare("DELETE FROM game_sessions WHERE room_id = ?").bind(roomId),
-        db.prepare("UPDATE rooms SET status = 'waiting', updated_at = ? WHERE id = ?").bind(nowIso(), roomId),
-      ]);
-      await rebalanceRoomSeats(db, roomId, room.gameId);
-    } else {
-      const nextGame = removePlayerFromGame(JSON.parse(session.stateJson), playerId);
-      await db.prepare("UPDATE game_sessions SET state_json = ?, revision = revision + 1, updated_at = ? WHERE room_id = ? AND revision = ?")
-        .bind(JSON.stringify(nextGame), nowIso(), roomId, session.revision).run();
-    }
-  } else if (room.status === "waiting") {
-    await rebalanceRoomSeats(db, roomId, room.gameId);
-  }
-  return { interrupted };
+  throw new Error("다른 플레이어의 행동과 겹쳤습니다. 다시 시도해 주세요.");
 }
 
-async function leaveOtherRooms(db: D1Database, playerId: string, keepRoomId?: string) {
-  const memberships = (await db.prepare("SELECT room_id AS roomId FROM room_members WHERE player_id = ? ORDER BY joined_at DESC")
-    .bind(playerId).all()).results as Array<{ roomId: string }>;
-  for (const membership of memberships) if (membership.roomId !== keepRoomId) await removeMemberFromRoom(db, playerId, membership.roomId);
-}
-
-async function cleanupStaleMemberships(db: D1Database) {
-  const stale = (await db.prepare(`SELECT rm.room_id AS roomId, rm.player_id AS playerId
-    FROM room_members rm JOIN players p ON p.id = rm.player_id
-    WHERE datetime(p.last_seen) < datetime('now', '-2 minutes') LIMIT 100`).all()).results as Array<{ roomId: string; playerId: string }>;
-  for (const member of stale) await removeMemberFromRoom(db, member.playerId, member.roomId);
-}
-
-async function cleanupDuplicateMemberships(db: D1Database) {
-  const memberships = (await db.prepare(`SELECT player_id AS playerId, room_id AS roomId
-    FROM room_members ORDER BY player_id, datetime(joined_at) DESC, rowid DESC`).all()).results as Array<{ playerId: string; roomId: string }>;
-  const newestRoomByPlayer = new Map<string, string>();
-  for (const membership of memberships) {
-    if (!newestRoomByPlayer.has(membership.playerId)) {
-      newestRoomByPlayer.set(membership.playerId, membership.roomId);
-      continue;
-    }
-    await removeMemberFromRoom(db, membership.playerId, membership.roomId);
-  }
-}
-
-async function cleanupInvalidGames(db: D1Database) {
-  const playingRooms = (await db.prepare(`SELECT r.id, r.game_id AS gameId,
-      SUM(CASE WHEN rm.role = 'player' THEN 1 ELSE 0 END) AS playerCount,
-      COUNT(gs.room_id) AS sessionCount
-    FROM rooms r
-    LEFT JOIN room_members rm ON rm.room_id = r.id
-    LEFT JOIN game_sessions gs ON gs.room_id = r.id
-    WHERE r.status = 'playing'
-    GROUP BY r.id, r.game_id`).all()).results as Array<{ id: string; gameId: GameId; playerCount: number; sessionCount: number }>;
-  for (const room of playingRooms) {
-    if (Number(room.playerCount) >= GAME_BY_ID[room.gameId].minPlayers && Number(room.sessionCount) > 0) continue;
-    await db.batch([
-      db.prepare("DELETE FROM game_sessions WHERE room_id = ?").bind(room.id),
-      db.prepare("UPDATE rooms SET status = 'waiting', updated_at = ? WHERE id = ?").bind(nowIso(), room.id),
-    ]);
-    await rebalanceRoomSeats(db, room.id, room.gameId);
-  }
-}
-
-async function runRoomMaintenance(db: D1Database) {
-  if (Date.now() - lastMembershipCleanupAt < 15_000) return;
-  lastMembershipCleanupAt = Date.now();
-  await cleanupStaleMemberships(db);
-  await cleanupDuplicateMemberships(db);
-  await cleanupInvalidGames(db);
+function nowIso(now = Date.now()) {
+  return new Date(now).toISOString();
 }
 
 function cleanText(value: unknown, max: number) {
@@ -222,12 +195,9 @@ function cleanText(value: unknown, max: number) {
 
 function cleanId(value: unknown) {
   const id = String(value ?? "");
-  if (!/^[a-zA-Z0-9_-]{6,80}$/.test(id)) throw new Error("잘못된 사용자 정보입니다.");
+  if (!/^[a-zA-Z0-9_-]{6,80}$/.test(id)) throw new Error("올바르지 않은 사용자 정보입니다.");
   return id;
 }
-
-const ROUND_GAMES = new Set<GameId>(["drawing", "chosung"]);
-const ALLOWED_ROUND_COUNTS = new Set([3, 5, 7, 10]);
 
 function parseSettings(value: unknown): GameOptions {
   try {
@@ -248,223 +218,387 @@ function sanitizeSettings(gameId: GameId, value: unknown): GameOptions {
 async function hashText(value: string) {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-export async function touchPlayer(playerIdRaw: unknown, nicknameRaw: unknown) {
-  const db = await ensureSchema();
+function upsertPlayer(state: PlatformState, playerIdRaw: unknown, nicknameRaw: unknown, force = false) {
   const id = cleanId(playerIdRaw);
-  const requested = cleanText(nicknameRaw, 14) || `손님${id.slice(-4)}`;
-  const now = nowIso();
-  const existing = await db.prepare("SELECT nickname FROM players WHERE id = ?").bind(id).first<{ nickname: string }>();
-  let nickname = existing?.nickname ?? requested;
-  if (!existing || existing.nickname !== requested) {
-    const duplicate = await db.prepare("SELECT id FROM players WHERE nickname = ? AND id <> ?").bind(requested, id).first();
-    nickname = duplicate ? `${requested.slice(0, 10)}${id.slice(-3)}` : requested;
+  const requested = cleanText(nicknameRaw, 14) || `플레이어${id.slice(-4)}`;
+  const now = Date.now();
+  const existing = state.players[id];
+  const duplicate = Object.values(state.players).some(
+    (player) => player.id !== id && player.nickname === requested,
+  );
+  const nickname = duplicate ? `${requested.slice(0, 10)}${id.slice(-3)}` : requested;
+  const shouldWrite = force
+    || !existing
+    || existing.nickname !== nickname
+    || now - Date.parse(existing.lastSeen) >= HEARTBEAT_WRITE_INTERVAL_MS;
+  if (shouldWrite) {
+    state.players[id] = {
+      id,
+      nickname,
+      lastSeen: nowIso(now),
+      createdAt: existing?.createdAt ?? nowIso(now),
+    };
   }
-  await db.prepare(`INSERT INTO players(id, nickname, last_seen, created_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET nickname = excluded.nickname, last_seen = excluded.last_seen`)
-    .bind(id, nickname, now, now).run();
-  return { id, nickname };
+  return { player: state.players[id] ?? { id, nickname, lastSeen: nowIso(now), createdAt: nowIso(now) }, changed: shouldWrite };
 }
 
-export async function getSnapshot(playerIdRaw: unknown, roomIdRaw?: unknown) {
-  const db = await ensureSchema();
-  await runRoomMaintenance(db);
-  await cleanupFinishedGames(db);
-  const playerId = playerIdRaw ? cleanId(playerIdRaw) : null;
-  const roomId = cleanText(roomIdRaw, 80);
-  const [roomsResult, playersResult, globalResult] = await Promise.all([
-    db.prepare(`SELECT r.id, r.title, r.game_id AS gameId, r.host_id AS hostId, p.nickname AS hostName,
-      r.status, r.capacity, CASE WHEN r.password_hash IS NULL THEN 0 ELSE 1 END AS locked,
-      r.settings_json AS settingsJson,
-      COUNT(rm.player_id) AS memberCount,
-      SUM(CASE WHEN rm.role = 'player' THEN 1 ELSE 0 END) AS playerCount
-      FROM rooms r
-      JOIN players p ON p.id = r.host_id
-      LEFT JOIN room_members rm ON rm.room_id = r.id
-      GROUP BY r.id
-      ORDER BY CASE WHEN r.status = 'waiting' THEN 0 ELSE 1 END, r.updated_at DESC
-      LIMIT 60`).all(),
-    db.prepare(`SELECT id, nickname, last_seen AS lastSeen FROM players
-      WHERE datetime(last_seen) >= datetime('now', '-2 minutes')
-      ORDER BY nickname LIMIT 100`).all(),
-    db.prepare(`SELECT m.id, m.sender_id AS senderId, p.nickname AS senderName, m.body, m.created_at AS createdAt
-      FROM messages m JOIN players p ON p.id = m.sender_id
-      WHERE m.scope = 'global' ORDER BY m.id DESC LIMIT 50`).all(),
-  ]);
+function roomMembers(state: PlatformState, roomId: string) {
+  return state.members[roomId] ?? [];
+}
 
-  let directMessages: unknown[] = [];
-  if (playerId) {
-    directMessages = (await db.prepare(`SELECT m.id, m.sender_id AS senderId, sp.nickname AS senderName,
-      m.recipient_id AS recipientId, rp.nickname AS recipientName, m.body, m.created_at AS createdAt
-      FROM messages m
-      JOIN players sp ON sp.id = m.sender_id
-      LEFT JOIN players rp ON rp.id = m.recipient_id
-      WHERE m.scope = 'direct' AND (m.sender_id = ? OR m.recipient_id = ?)
-      ORDER BY m.id DESC LIMIT 100`).bind(playerId, playerId).all()).results;
+function rebalanceRoomSeats(state: PlatformState, roomId: string, gameId: GameId) {
+  const maxPlayers = GAME_BY_ID[gameId].maxPlayers;
+  state.members[roomId] = roomMembers(state, roomId)
+    .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
+    .map((member, index) => ({ ...member, role: index < maxPlayers ? "player" : "spectator" }));
+}
+
+function removeMemberFromRoom(state: PlatformState, playerId: string, roomId: string) {
+  const room = state.rooms[roomId];
+  if (!room) return { interrupted: false };
+  const membership = roomMembers(state, roomId).find((member) => member.playerId === playerId);
+  if (!membership) return { interrupted: false };
+
+  const remaining = roomMembers(state, roomId).filter((member) => member.playerId !== playerId);
+  if (!remaining.length) {
+    delete state.members[roomId];
+    delete state.sessions[roomId];
+    delete state.rooms[roomId];
+    return { interrupted: room.status === "playing" };
+  }
+  state.members[roomId] = remaining;
+  if (room.hostId === playerId) room.hostId = remaining[0].playerId;
+
+  let interrupted = false;
+  if (room.status === "playing" && membership.role === "player") {
+    const playerCount = remaining.filter((member) => member.role === "player").length;
+    const session = state.sessions[roomId];
+    if (!session || playerCount < GAME_BY_ID[room.gameId].minPlayers) {
+      interrupted = true;
+      delete state.sessions[roomId];
+      room.status = "waiting";
+      room.updatedAt = nowIso();
+      rebalanceRoomSeats(state, roomId, room.gameId);
+    } else {
+      session.state = removePlayerFromGame(session.state, playerId);
+      session.revision += 1;
+      session.updatedAt = nowIso();
+    }
+  } else if (room.status === "waiting") {
+    rebalanceRoomSeats(state, roomId, room.gameId);
+  }
+  return { interrupted };
+}
+
+function leaveOtherRooms(state: PlatformState, playerId: string, keepRoomId?: string) {
+  for (const [roomId, members] of Object.entries(state.members)) {
+    if (roomId !== keepRoomId && members.some((member) => member.playerId === playerId)) {
+      removeMemberFromRoom(state, playerId, roomId);
+    }
+  }
+}
+
+function runMaintenance(state: PlatformState, now = Date.now()) {
+  let changed = false;
+
+  for (const [roomId, session] of Object.entries(state.sessions)) {
+    if (session.state.phase !== "finished" || now - Date.parse(session.updatedAt) < FINISHED_RETURN_DELAY_MS) continue;
+    const room = state.rooms[roomId];
+    delete state.sessions[roomId];
+    if (room) {
+      room.status = "waiting";
+      room.updatedAt = nowIso(now);
+      rebalanceRoomSeats(state, roomId, room.gameId);
+    }
+    changed = true;
   }
 
-  let activeRoom = null;
-  if (roomId && playerId) activeRoom = await getRoomSnapshot(db, roomId, playerId);
+  if (now - state.lastMaintenanceAt < MAINTENANCE_INTERVAL_MS) return changed;
+  state.lastMaintenanceAt = now;
+  changed = true;
 
+  const staleCutoff = now - ONLINE_WINDOW_MS;
+  for (const [roomId, members] of Object.entries(state.members)) {
+    for (const member of [...members]) {
+      const player = state.players[member.playerId];
+      if (!player || Date.parse(player.lastSeen) < staleCutoff) {
+        removeMemberFromRoom(state, member.playerId, roomId);
+      }
+    }
+  }
+
+  for (const room of Object.values(state.rooms)) {
+    if (room.status !== "playing") continue;
+    const playerCount = roomMembers(state, room.id).filter((member) => member.role === "player").length;
+    if (playerCount >= GAME_BY_ID[room.gameId].minPlayers && state.sessions[room.id]) continue;
+    delete state.sessions[room.id];
+    room.status = "waiting";
+    room.updatedAt = nowIso(now);
+    rebalanceRoomSeats(state, room.id, room.gameId);
+  }
+  return changed;
+}
+
+function advanceRoomGame(state: PlatformState, roomId: string, now = Date.now()) {
+  const session = state.sessions[roomId];
+  if (!session) return false;
+  const advanced = advanceTimedGame(session.state, now);
+  if (JSON.stringify(advanced) === JSON.stringify(session.state)) return false;
+  session.state = advanced;
+  session.revision += 1;
+  session.updatedAt = nowIso(now);
+  return true;
+}
+
+function makeRoomListItem(state: PlatformState, room: RoomRecord) {
+  const members = roomMembers(state, room.id);
   return {
-    rooms: (roomsResult.results as RoomListRow[]).map((room) => ({ ...room, settings: parseSettings(room.settingsJson), locked: Boolean(room.locked), memberCount: Number(room.memberCount), playerCount: Number(room.playerCount) })),
-    onlinePlayers: playersResult.results,
-    globalMessages: [...globalResult.results].reverse(),
-    directMessages: [...directMessages].reverse(),
-    activeRoom,
-    games: GAME_CATALOG,
-    serverTime: nowIso(),
+    id: room.id,
+    title: room.title,
+    gameId: room.gameId,
+    hostId: room.hostId,
+    hostName: state.players[room.hostId]?.nickname ?? "알 수 없음",
+    status: room.status,
+    capacity: room.capacity,
+    locked: Boolean(room.passwordHash),
+    memberCount: members.length,
+    playerCount: members.filter((member) => member.role === "player").length,
+    settings: room.settings,
   };
 }
 
-async function getRoomSnapshot(db: D1Database, roomId: string, viewerId: string) {
-  const room = await db.prepare(`SELECT r.id, r.title, r.game_id AS gameId, r.host_id AS hostId,
-    r.status, r.capacity, r.settings_json AS settingsJson, CASE WHEN r.password_hash IS NULL THEN 0 ELSE 1 END AS locked
-    FROM rooms r WHERE r.id = ?`).bind(roomId).first<RoomSnapshotRow>();
-  if (!room) return null;
-  const members = (await db.prepare(`SELECT rm.player_id AS id, p.nickname AS name, rm.role, rm.joined_at AS joinedAt
-    FROM room_members rm JOIN players p ON p.id = rm.player_id
-    WHERE rm.room_id = ? ORDER BY rm.role DESC, rm.joined_at`).bind(roomId).all()).results as Array<{ id: string; name: string; role: string; joinedAt: string }>;
-  const membership = members.find((member) => member.id === viewerId);
-  if (!membership) return null;
-  const session = await db.prepare("SELECT state_json AS stateJson, revision FROM game_sessions WHERE room_id = ?").bind(roomId).first<SessionRow>();
-  let game: GameEnvelope | null = null;
-  let revision = Number(session?.revision ?? 0);
-  if (session) {
-    const storedGame = JSON.parse(session.stateJson) as GameEnvelope;
-    const advancedGame = advanceTimedGame(storedGame, Date.now());
-    const advancedJson = JSON.stringify(advancedGame);
-    if (advancedJson !== session.stateJson) {
-      const update = await db.prepare(`UPDATE game_sessions SET state_json = ?, revision = revision + 1, updated_at = ?
-        WHERE room_id = ? AND revision = ?`).bind(advancedJson, nowIso(), roomId, revision).run();
-      if (update.meta.changes) revision += 1;
+function makeSnapshot(state: PlatformState, playerId: string | null, roomId: string) {
+  const now = Date.now();
+  const rooms = Object.values(state.rooms)
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === "waiting" ? -1 : 1;
+      return b.updatedAt.localeCompare(a.updatedAt);
+    })
+    .slice(0, 60)
+    .map((room) => makeRoomListItem(state, room));
+  const onlinePlayers = Object.values(state.players)
+    .filter((player) => now - Date.parse(player.lastSeen) <= ONLINE_WINDOW_MS)
+    .sort((a, b) => a.nickname.localeCompare(b.nickname, "ko"))
+    .slice(0, 100)
+    .map(({ id, nickname, lastSeen }) => ({ id, nickname, lastSeen }));
+
+  const hydrateMessage = (message: MessageRecord) => ({
+    ...message,
+    senderName: state.players[message.senderId]?.nickname ?? "알 수 없음",
+    recipientName: message.recipientId ? state.players[message.recipientId]?.nickname : undefined,
+  });
+  const globalMessages = state.messages
+    .filter((message) => message.scope === "global")
+    .slice(-50)
+    .map(hydrateMessage);
+  const directMessages = playerId
+    ? state.messages
+      .filter((message) => message.scope === "direct" && (message.senderId === playerId || message.recipientId === playerId))
+      .slice(-100)
+      .map(hydrateMessage)
+    : [];
+
+  let activeRoom = null;
+  const room = roomId ? state.rooms[roomId] : undefined;
+  if (room && playerId) {
+    const membership = roomMembers(state, roomId).find((member) => member.playerId === playerId);
+    if (membership) {
+      const members = roomMembers(state, roomId)
+        .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
+        .map((member) => ({
+          id: member.playerId,
+          name: state.players[member.playerId]?.nickname ?? "알 수 없음",
+          role: member.role,
+          joinedAt: member.joinedAt,
+        }));
+      const session = state.sessions[roomId];
+      activeRoom = {
+        ...makeRoomListItem(state, room),
+        members,
+        viewerRole: membership.role,
+        game: session ? projectGame(session.state, playerId) : null,
+        revision: session?.revision ?? 0,
+      };
     }
-    game = projectGame(advancedGame, viewerId);
   }
-  return { ...room, settings: parseSettings(room.settingsJson), locked: Boolean(room.locked), members, viewerRole: membership.role, game, revision };
+
+  return {
+    rooms,
+    onlinePlayers,
+    globalMessages,
+    directMessages,
+    activeRoom,
+    games: GAME_CATALOG,
+    serverTime: nowIso(now),
+  };
 }
 
-export async function executeCommand(body: JsonRecord) {
-  const actor = await touchPlayer(body.playerId, body.nickname);
-  const db = await ensureSchema();
+export async function touchPlayer(playerIdRaw: unknown, nicknameRaw: unknown, auth?: StateAuth) {
+  const result = await mutateState((state) => {
+    const actor = upsertPlayer(state, playerIdRaw, nicknameRaw, true);
+    return { value: actor.player, changed: actor.changed };
+  }, auth);
+  return result.value;
+}
+
+export async function getSnapshot(playerIdRaw: unknown, roomIdRaw?: unknown, nicknameRaw?: unknown, auth?: StateAuth) {
+  const playerId = playerIdRaw ? cleanId(playerIdRaw) : null;
+  const roomId = cleanText(roomIdRaw, 80);
+  const result = await mutateState((state) => {
+    let changed = runMaintenance(state);
+    if (playerId) changed = upsertPlayer(state, playerId, nicknameRaw).changed || changed;
+    if (roomId) changed = advanceRoomGame(state, roomId) || changed;
+    return { value: null, changed };
+  }, auth);
+  return makeSnapshot(result.state, playerId, roomId);
+}
+
+export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
   const type = String(body.type ?? "heartbeat");
   const payload = asRecord(body.payload);
+  const playerId = cleanId(body.playerId);
 
-  if (type === "heartbeat" || type === "setNickname") return { ok: true, player: actor };
-  if (type === "createRoom") return createRoom(db, actor.id, payload);
-  if (type === "joinRoom") return joinRoom(db, actor.id, payload);
-  if (type === "leaveRoom") return leaveRoom(db, actor.id, payload);
-  if (type === "startGame") return startGame(db, actor.id, payload);
-  if (type === "gameAction") return applyGameAction(db, actor.id, payload);
-  if (type === "sendGlobal") return sendMessage(db, actor.id, null, "global", payload.body);
-  if (type === "sendDirect") return sendMessage(db, actor.id, cleanId(payload.recipientId), "direct", payload.body);
-  throw new Error("지원하지 않는 요청입니다.");
+  const result = await mutateState(async (state) => {
+    const actor = upsertPlayer(state, playerId, body.nickname, true).player;
+    runMaintenance(state);
+
+    if (type === "heartbeat" || type === "setNickname") return { value: { ok: true, player: actor } };
+    if (type === "createRoom") return { value: await createRoom(state, actor.id, payload) };
+    if (type === "joinRoom") return { value: await joinRoom(state, actor.id, payload) };
+    if (type === "leaveRoom") return { value: leaveRoom(state, actor.id, payload) };
+    if (type === "startGame") return { value: startGame(state, actor.id, payload) };
+    if (type === "gameAction") return { value: await applyGameAction(state, actor.id, payload) };
+    if (type === "sendGlobal") return { value: sendMessage(state, actor.id, null, "global", payload.body) };
+    if (type === "sendDirect") return { value: sendMessage(state, actor.id, cleanId(payload.recipientId), "direct", payload.body) };
+    throw new Error("지원하지 않는 요청입니다.");
+  }, auth);
+  return result.value;
 }
 
-async function createRoom(db: D1Database, hostId: string, payload: JsonRecord) {
+async function createRoom(state: PlatformState, hostId: string, payload: JsonRecord) {
   const gameId = String(payload.gameId ?? "") as GameId;
   const game = GAME_BY_ID[gameId];
-  if (!game) throw new Error("게임을 선택하세요.");
+  if (!game) throw new Error("게임을 선택해 주세요.");
   const id = crypto.randomUUID().replaceAll("-", "");
   const title = cleanText(payload.title, 30) || `${game.name} 같이 해요`;
   const password = cleanText(payload.password, 40);
-  const passwordHash = password ? await hashText(password) : null;
-  const settings = sanitizeSettings(gameId, payload.settings);
   const now = nowIso();
-  await leaveOtherRooms(db, hostId);
-  await db.batch([
-    db.prepare(`INSERT INTO rooms(id, title, game_id, host_id, status, capacity, password_hash, settings_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'waiting', 10, ?, ?, ?, ?)`).bind(id, title, gameId, hostId, passwordHash, JSON.stringify(settings), now, now),
-    db.prepare(`INSERT INTO room_members(room_id, player_id, role, joined_at) VALUES (?, ?, 'player', ?)`)
-      .bind(id, hostId, now),
-  ]);
+  leaveOtherRooms(state, hostId);
+  state.rooms[id] = {
+    id,
+    title,
+    gameId,
+    hostId,
+    status: "waiting",
+    capacity: 10,
+    passwordHash: password ? await hashText(password) : null,
+    settings: sanitizeSettings(gameId, payload.settings),
+    createdAt: now,
+    updatedAt: now,
+  };
+  state.members[id] = [{ playerId: hostId, role: "player", joinedAt: now }];
   return { ok: true, roomId: id };
 }
 
-async function joinRoom(db: D1Database, playerId: string, payload: JsonRecord) {
+async function joinRoom(state: PlatformState, playerId: string, payload: JsonRecord) {
   const roomId = cleanText(payload.roomId, 80);
-  const room = await db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId).first<{ password_hash: string | null; game_id: GameId; status: string }>();
+  const room = state.rooms[roomId];
   if (!room) throw new Error("방을 찾을 수 없습니다.");
-  const existing = await db.prepare("SELECT role FROM room_members WHERE room_id = ? AND player_id = ?").bind(roomId, playerId).first<{ role: string }>();
-  const count = await db.prepare("SELECT COUNT(*) AS count FROM room_members WHERE room_id = ?").bind(roomId).first<{ count: number }>();
-  if (!existing && Number(count?.count ?? 0) >= 10) throw new Error("방이 가득 찼습니다.");
-  if (room.password_hash) {
+  const existing = roomMembers(state, roomId).find((member) => member.playerId === playerId);
+  if (!existing && roomMembers(state, roomId).length >= room.capacity) throw new Error("방이 가득 찼습니다.");
+  if (room.passwordHash) {
     const supplied = await hashText(cleanText(payload.password, 40));
-    if (supplied !== room.password_hash) throw new Error("비밀번호가 맞지 않습니다.");
+    if (supplied !== room.passwordHash) throw new Error("비밀번호가 맞지 않습니다.");
   }
-  await leaveOtherRooms(db, playerId, roomId);
+  leaveOtherRooms(state, playerId, roomId);
   if (existing) return { ok: true, roomId, role: existing.role };
-  const game = GAME_BY_ID[room.game_id as GameId];
-  const playerCount = await db.prepare("SELECT COUNT(*) AS count FROM room_members WHERE room_id = ? AND role = 'player'").bind(roomId).first<{ count: number }>();
-  const role = room.status === "waiting" && Number(playerCount?.count ?? 0) < game.maxPlayers ? "player" : "spectator";
-  await db.prepare(`INSERT INTO room_members(room_id, player_id, role, joined_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(room_id, player_id) DO UPDATE SET role = excluded.role`)
-    .bind(roomId, playerId, role, nowIso()).run();
+  const playerCount = roomMembers(state, roomId).filter((member) => member.role === "player").length;
+  const role: MemberRole = room.status === "waiting" && playerCount < GAME_BY_ID[room.gameId].maxPlayers
+    ? "player"
+    : "spectator";
+  state.members[roomId] = [...roomMembers(state, roomId), { playerId, role, joinedAt: nowIso() }];
+  room.updatedAt = nowIso();
   return { ok: true, roomId, role };
 }
 
-async function leaveRoom(db: D1Database, playerId: string, payload: JsonRecord) {
+function leaveRoom(state: PlatformState, playerId: string, payload: JsonRecord) {
   const roomId = cleanText(payload.roomId, 80);
-  const result = await removeMemberFromRoom(db, playerId, roomId);
-  return { ok: true, ...result };
+  return { ok: true, ...removeMemberFromRoom(state, playerId, roomId) };
 }
 
-async function startGame(db: D1Database, playerId: string, payload: JsonRecord) {
+function startGame(state: PlatformState, playerId: string, payload: JsonRecord) {
   const roomId = cleanText(payload.roomId, 80);
-  const room = await db.prepare("SELECT game_id AS gameId, host_id AS hostId, settings_json AS settingsJson FROM rooms WHERE id = ?").bind(roomId).first<{ gameId: GameId; hostId: string; settingsJson: string }>();
+  const room = state.rooms[roomId];
   if (!room || room.hostId !== playerId) throw new Error("방장만 시작할 수 있습니다.");
-  const members = (await db.prepare(`SELECT rm.player_id AS id, p.nickname AS name FROM room_members rm
-    JOIN players p ON p.id = rm.player_id WHERE rm.room_id = ? AND rm.role = 'player' ORDER BY rm.joined_at`)
-    .bind(roomId).all()).results as Array<{ id: string; name: string }>;
-  const info = GAME_BY_ID[room.gameId as GameId];
+  const members = roomMembers(state, roomId)
+    .filter((member) => member.role === "player")
+    .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
+    .map((member) => ({ id: member.playerId, name: state.players[member.playerId]?.nickname ?? "플레이어" }));
+  const info = GAME_BY_ID[room.gameId];
   if (members.length < info.minPlayers) throw new Error(`최소 ${info.minPlayers}명이 필요합니다.`);
-  const game = createGame(room.gameId, members.slice(0, info.maxPlayers), Date.now(), sanitizeSettings(room.gameId, room.settingsJson));
-  const now = nowIso();
-  await db.batch([
-    db.prepare(`INSERT INTO game_sessions(room_id, game_id, state_json, revision, updated_at)
-      VALUES (?, ?, ?, 1, ?)
-      ON CONFLICT(room_id) DO UPDATE SET game_id = excluded.game_id, state_json = excluded.state_json,
-        revision = game_sessions.revision + 1, updated_at = excluded.updated_at`)
-      .bind(roomId, room.gameId, JSON.stringify(game), now),
-    db.prepare("UPDATE rooms SET status = 'playing', updated_at = ? WHERE id = ?").bind(now, roomId),
-  ]);
+  const game = createGame(room.gameId, members.slice(0, info.maxPlayers), Date.now(), sanitizeSettings(room.gameId, room.settings));
+  const previousRevision = state.sessions[roomId]?.revision ?? 0;
+  state.sessions[roomId] = {
+    gameId: room.gameId,
+    state: game,
+    revision: previousRevision + 1,
+    updatedAt: nowIso(),
+  };
+  room.status = "playing";
+  room.updatedAt = nowIso();
   return { ok: true };
 }
 
-async function applyGameAction(db: D1Database, playerId: string, payload: JsonRecord) {
+async function applyGameAction(state: PlatformState, playerId: string, payload: JsonRecord) {
   const roomId = cleanText(payload.roomId, 80);
-  const membership = await db.prepare("SELECT role FROM room_members WHERE room_id = ? AND player_id = ?")
-    .bind(roomId, playerId).first<{ role: string }>();
+  const membership = roomMembers(state, roomId).find((member) => member.playerId === playerId);
   if (membership?.role !== "player") throw new Error("참가자만 행동할 수 있습니다.");
-  const session = await db.prepare("SELECT state_json AS stateJson, revision FROM game_sessions WHERE room_id = ?").bind(roomId).first<SessionRow>();
+  const session = state.sessions[roomId];
   if (!session) throw new Error("아직 게임이 시작되지 않았습니다.");
   const rawCommand = asRecord(payload.command);
-  if (!cleanText(rawCommand.type, 40)) {
-    throw new Error("잘못된 게임 행동입니다.");
-  }
-  const currentGame = JSON.parse(session.stateJson) as GameEnvelope;
-  const command = { ...rawCommand, payload: { ...asRecord(rawCommand.payload) }, playerId, now: Date.now() } as GameCommand;
-  if (currentGame.gameId === "word-chain" && command.type === "SUBMIT_WORD") {
+  if (!cleanText(rawCommand.type, 40)) throw new Error("올바르지 않은 게임 행동입니다.");
+  const command = {
+    ...rawCommand,
+    payload: { ...asRecord(rawCommand.payload) },
+    playerId,
+    now: Date.now(),
+  } as GameCommand;
+  if (session.state.gameId === "word-chain" && command.type === "SUBMIT_WORD") {
     command.payload!.dictionaryValid = await isKnownWord(command.payload?.word);
   }
-  const next = reduceGame(currentGame, command);
-  const result = await db.prepare(`UPDATE game_sessions SET state_json = ?, revision = revision + 1, updated_at = ?
-    WHERE room_id = ? AND revision = ?`).bind(JSON.stringify(next), nowIso(), roomId, session.revision).run();
-  if (!result.meta.changes) throw new Error("동시에 행동이 들어왔습니다. 다시 시도하세요.");
+  const next = reduceGame(session.state, command);
+  session.state = next;
+  session.revision += 1;
+  session.updatedAt = nowIso();
   return { ok: true, message: next.message };
 }
 
-async function sendMessage(db: D1Database, senderId: string, recipientId: string | null, scope: string, rawBody: unknown) {
+function sendMessage(
+  state: PlatformState,
+  senderId: string,
+  recipientId: string | null,
+  scope: "global" | "direct",
+  rawBody: unknown,
+) {
   const body = cleanText(rawBody, 200);
-  if (!body) throw new Error("메시지를 입력하세요.");
-  if (recipientId) {
-    const target = await db.prepare("SELECT id FROM players WHERE id = ?").bind(recipientId).first();
-    if (!target) throw new Error("사용자를 찾을 수 없습니다.");
-  }
-  await db.prepare("INSERT INTO messages(sender_id, recipient_id, scope, body, created_at) VALUES (?, ?, ?, ?, ?)")
-    .bind(senderId, recipientId, scope, body, nowIso()).run();
+  if (!body) throw new Error("메시지를 입력해 주세요.");
+  if (recipientId && !state.players[recipientId]) throw new Error("사용자를 찾을 수 없습니다.");
+  state.messages.push({
+    id: state.nextMessageId,
+    senderId,
+    recipientId,
+    scope,
+    body,
+    createdAt: nowIso(),
+  });
+  state.nextMessageId += 1;
+  if (state.messages.length > MAX_MESSAGES) state.messages = state.messages.slice(-MAX_MESSAGES);
   return { ok: true };
 }
+
+export { emptyState };

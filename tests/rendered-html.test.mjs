@@ -10,7 +10,7 @@ test("게임 로비와 동기화 API가 배포 산출물에 포함됐다", async
   ]);
   assert.match(page, /title:\s*"게임 로비"/);
   assert.match(platform, /로비에 연결하는 중/);
-  assert.match(worker, /cloudflare:workers/);
+  assert.match(worker, /functions\/v1\/game-platform-state/);
   assert.match(worker, /route:\/api\/sync/);
   assert.doesNotMatch(`${page}${platform}`, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });

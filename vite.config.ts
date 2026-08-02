@@ -1,5 +1,6 @@
 import vinext from "vinext";
 import { defineConfig, loadEnv } from "vite";
+import { nitro } from "nitro/vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 
@@ -13,12 +14,21 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 export default defineConfig(async ({ mode }) => {
   const appEnv = loadEnv(mode, process.cwd(), "");
+  const isNitroTarget = Boolean(process.env.VERCEL || process.env.NITRO_PRESET);
+
+  if (isNitroTarget) {
+    return {
+      plugins: [vinext(), nitro()],
+    };
+  }
+
   const localBindingConfig = {
     main: "./worker/index.ts",
     compatibility_flags: ["nodejs_compat"],
     vars: {
       SUPABASE_URL: appEnv.SUPABASE_URL ?? "",
       SUPABASE_ANON_KEY: appEnv.SUPABASE_ANON_KEY ?? "",
+      GAME_STATE_SECRET: appEnv.GAME_STATE_SECRET ?? "",
     },
     d1_databases: d1
       ? [
