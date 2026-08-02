@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { GAME_BY_ID, GAME_CATALOG, type GameId } from "@/lib/games/catalog";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GAME_BY_ID, GAME_CATALOG, type GameId, type GameInfo } from "@/lib/games/catalog";
 import type { GameCommand, GameEnvelope } from "@/lib/games/engine";
+import { hasUnreadMessage, latestMessageId } from "@/lib/chat/unread";
 import { GameStage } from "./GameStage";
 
 type Identity = { id: string; nickname: string };
 type RoomListItem = {
   id: string; title: string; gameId: GameId; hostId: string; hostName: string;
   status: "waiting" | "playing"; capacity: number; locked: boolean; memberCount: number; playerCount: number;
+  settings: { rounds?: number };
 };
 type Member = { id: string; name: string; role: "player" | "spectator"; joinedAt: string };
 type ActiveRoom = RoomListItem & { members: Member[]; viewerRole: string; game: GameEnvelope | null; revision: number };
@@ -22,6 +24,10 @@ type Snapshot = {
 };
 
 const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], globalMessages: [], directMessages: [], activeRoom: null };
+
+function playerCountLabel(game: Pick<GameInfo, "minPlayers" | "maxPlayers">) {
+  return game.minPlayers === game.maxPlayers ? `${game.minPlayers}명` : `${game.minPlayers}~${game.maxPlayers}명`;
+}
 
 function newIdentity(): Identity {
   const id = crypto.randomUUID().replaceAll("-", "");
@@ -37,15 +43,32 @@ export function GamePlatform() {
   const [search, setSearch] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [nicknameOpen, setNicknameOpen] = useState(false);
+  const [joinTarget, setJoinTarget] = useState<RoomListItem | null>(null);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [hasUnreadChat, setHasUnreadChat] = useState(false);
+  const pollInFlight = useRef(false);
+  const snapshotRef = useRef<Snapshot>(EMPTY_SNAPSHOT);
+  const latestMessageIdRef = useRef<number | null>(null);
+  const chatOpenRef = useRef(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("game-lobby-identity");
     const value = stored ? JSON.parse(stored) as Identity : newIdentity();
     localStorage.setItem("game-lobby-identity", JSON.stringify(value));
-    setIdentity(value);
+    const storedRoom = localStorage.getItem("game-lobby-active-room");
+    queueMicrotask(() => {
+      setIdentity(value);
+      if (storedRoom) setActiveRoomId(storedRoom);
+    });
   }, []);
+
+  useEffect(() => {
+    if (!identity) return;
+    if (activeRoomId) localStorage.setItem("game-lobby-active-room", activeRoomId);
+    else localStorage.removeItem("game-lobby-active-room");
+  }, [identity, activeRoomId]);
 
   const refresh = useCallback(async () => {
     if (!identity) return;
@@ -55,6 +78,15 @@ export function GamePlatform() {
       const response = await fetch(`/api/sync?${params}`, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "서버 연결 실패");
+      const previous = snapshotRef.current;
+      const allMessages = [...(data.globalMessages as ChatMessage[]), ...(data.directMessages as ChatMessage[])];
+      const newestMessageId = latestMessageId(allMessages);
+      if (!chatOpenRef.current && hasUnreadMessage(allMessages, latestMessageIdRef.current, identity.id)) setHasUnreadChat(true);
+      latestMessageIdRef.current = Math.max(latestMessageIdRef.current ?? 0, newestMessageId);
+      if (previous.activeRoom?.game && !data.activeRoom?.game && previous.activeRoom.game.phase !== "finished") {
+        setNotice("필요한 인원이 나가 게임이 중단되었습니다. 대기방으로 돌아왔습니다.");
+      }
+      snapshotRef.current = data;
       setSnapshot(data);
       if (activeRoomId && !data.activeRoom) setActiveRoomId(null);
     } catch (error) {
@@ -64,8 +96,14 @@ export function GamePlatform() {
 
   useEffect(() => {
     if (!identity) return;
-    refresh();
-    const timer = window.setInterval(refresh, activeRoomId ? 900 : 2200);
+    const poll = async () => {
+      if (document.hidden || pollInFlight.current) return;
+      pollInFlight.current = true;
+      try { await refresh(); }
+      finally { pollInFlight.current = false; }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), activeRoomId ? 300 : 1600);
     return () => window.clearInterval(timer);
   }, [identity, activeRoomId, refresh]);
 
@@ -104,21 +142,54 @@ export function GamePlatform() {
     return !query || room.title.toLowerCase().includes(query) || GAME_BY_ID[room.gameId].name.includes(query);
   }), [snapshot.rooms, gameFilter, statusFilter, search]);
 
-  const updateNickname = async () => {
-    if (!identity) return;
-    const nickname = window.prompt("새 닉네임", identity.nickname)?.trim();
-    if (!nickname) return;
-    const next = { ...identity, nickname: nickname.slice(0, 14) };
-    localStorage.setItem("game-lobby-identity", JSON.stringify(next));
-    setIdentity(next);
+  const openChat = useCallback(() => {
+    chatOpenRef.current = true;
+    setHasUnreadChat(false);
+    setChatOpen(true);
+  }, []);
+
+  const closeChat = useCallback(() => {
+    chatOpenRef.current = false;
+    setChatOpen(false);
+  }, []);
+
+  const saveNickname = async (nickname: string) => {
+    const next = { ...identity!, nickname: nickname.trim().slice(0, 14) };
+    if (!next.nickname) return;
+    setLoading(true);
+    setNotice("");
+    try {
+      const response = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "setNickname", playerId: next.id, nickname: next.nickname, payload: {} }),
+      });
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || "닉네임 변경 실패");
+      const saved = { ...next, nickname: data.player?.nickname ?? next.nickname };
+      localStorage.setItem("game-lobby-identity", JSON.stringify(saved));
+      setIdentity(saved);
+      setNicknameOpen(false);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "닉네임 변경 실패");
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (!identity) return <div className="boot-screen">로비에 연결하는 중…</div>;
 
-  const joinRoom = async (room: RoomListItem) => {
-    const password = room.locked ? window.prompt("방 비밀번호를 입력하세요") ?? "" : "";
+  const enterRoom = async (room: RoomListItem, password = "") => {
     const result = await command("joinRoom", { roomId: room.id, password });
-    if (result) setActiveRoomId(room.id);
+    if (result) {
+      setJoinTarget(null);
+      setActiveRoomId(room.id);
+    }
+  };
+
+  const joinRoom = (room: RoomListItem) => {
+    if (room.locked) setJoinTarget(room);
+    else void enterRoom(room);
   };
 
   if (activeRoomId && snapshot.activeRoom) {
@@ -131,9 +202,10 @@ export function GamePlatform() {
           onLeave={async () => { await command("leaveRoom", { roomId: activeRoomId }); setActiveRoomId(null); }}
           onStart={() => command("startGame", { roomId: activeRoomId })}
           onAction={(gameCommand) => command("gameAction", { roomId: activeRoomId, command: gameCommand })}
-          onChat={() => setChatOpen(true)}
+          onChat={openChat}
+          hasUnreadChat={hasUnreadChat}
         />
-        <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} identity={identity} snapshot={snapshot} command={command} />
+        <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
         {notice && <Toast message={notice} onClose={() => setNotice("")} />}
       </>
     );
@@ -158,8 +230,8 @@ export function GamePlatform() {
           <div className="topbar-title"><h1>게임 로비</h1><span className="online-pill"><i />현재 {snapshot.onlinePlayers.length || 1}명 접속 중</span></div>
           <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="방 이름 또는 게임 검색" /></label>
           <div className="top-actions">
-            <button className="icon-button" onClick={() => setChatOpen(true)} aria-label="채팅 열기">▤<b>{snapshot.directMessages.filter((message) => message.recipientId === identity.id).length || ""}</b></button>
-            <button className="profile-button" onClick={updateNickname}><span>{identity.nickname[0]}</span><strong>{identity.nickname}</strong></button>
+            <button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={openChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button>
+            <button className="profile-button" onClick={() => setNicknameOpen(true)}><span>{identity.nickname[0]}</span><strong>{identity.nickname}</strong></button>
             <button className="primary-button create-button" onClick={() => setCreateOpen(true)}>＋ 방 만들기</button>
           </div>
         </header>
@@ -182,9 +254,42 @@ export function GamePlatform() {
       </main>
 
       <button className="mobile-create" onClick={() => setCreateOpen(true)} aria-label="방 만들기">＋</button>
-      <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} identity={identity} snapshot={snapshot} command={command} />
+      <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
       {createOpen && <CreateRoomModal onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) { setCreateOpen(false); setActiveRoomId(result.roomId); } }} />}
+      {nicknameOpen && <NicknameModal initialValue={identity.nickname} loading={loading} onClose={() => setNicknameOpen(false)} onSave={saveNickname} />}
+      {joinTarget && <PasswordModal roomTitle={joinTarget.title} loading={loading} onClose={() => setJoinTarget(null)} onSubmit={(password) => enterRoom(joinTarget, password)} />}
       {notice && <Toast message={notice} onClose={() => setNotice("")} />}
+    </div>
+  );
+}
+
+function NicknameModal({ initialValue, loading, onClose, onSave }: {
+  initialValue: string; loading: boolean; onClose: () => void; onSave: (nickname: string) => void;
+}) {
+  const [nickname, setNickname] = useState(initialValue);
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <form className="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="nickname-title" onSubmit={(event) => { event.preventDefault(); if (nickname.trim()) onSave(nickname); }}>
+        <div className="modal-head"><div><span className="eyebrow">내 프로필</span><h2 id="nickname-title">닉네임 변경</h2></div><button type="button" onClick={onClose} aria-label="닫기">×</button></div>
+        <label>새 닉네임<input autoFocus value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={14} placeholder="닉네임 입력" /></label>
+        <p className="modal-note">최대 14글자까지 사용할 수 있어요.</p>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>취소</button><button className="primary-button" disabled={loading || !nickname.trim()}>저장</button></div>
+      </form>
+    </div>
+  );
+}
+
+function PasswordModal({ roomTitle, loading, onClose, onSubmit }: {
+  roomTitle: string; loading: boolean; onClose: () => void; onSubmit: (password: string) => void;
+}) {
+  const [password, setPassword] = useState("");
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <form className="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="password-title" onSubmit={(event) => { event.preventDefault(); onSubmit(password); }}>
+        <div className="modal-head"><div><span className="eyebrow">비밀번호 방</span><h2 id="password-title">{roomTitle}</h2></div><button type="button" onClick={onClose} aria-label="닫기">×</button></div>
+        <label>방 비밀번호<input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} maxLength={40} placeholder="비밀번호 입력" /></label>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>취소</button><button className="primary-button" disabled={loading || !password}>입장</button></div>
+      </form>
     </div>
   );
 }
@@ -208,25 +313,28 @@ function CreateRoomModal({ onClose, onCreate }: { onClose: () => void; onCreate:
   const [gameId, setGameId] = useState<GameId>("gomoku");
   const [title, setTitle] = useState("");
   const [password, setPassword] = useState("");
+  const [rounds, setRounds] = useState(5);
   const game = GAME_BY_ID[gameId];
+  const supportsRounds = gameId === "drawing" || gameId === "chosung";
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="create-title">
         <div className="modal-head"><div><span className="eyebrow">새로운 게임</span><h2 id="create-title">방 만들기</h2></div><button onClick={onClose} aria-label="닫기">×</button></div>
-        <label>게임 선택<select value={gameId} onChange={(event) => setGameId(event.target.value as GameId)}>{GAME_CATALOG.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.minPlayers}~{item.maxPlayers}명</option>)}</select></label>
+        <label>게임 선택<select value={gameId} onChange={(event) => setGameId(event.target.value as GameId)}>{GAME_CATALOG.map((item) => <option key={item.id} value={item.id}>{item.name} · {playerCountLabel(item)}</option>)}</select></label>
         <div className="selected-game"><span style={{ background: game.accent }}>{game.icon}</span><div><strong>{game.name}</strong><p>{game.description}</p></div></div>
+        {supportsRounds && <label>라운드 수<select value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{[3, 5, 7, 10].map((count) => <option key={count} value={count}>{count}라운드</option>)}</select></label>}
         <label>방 제목<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={30} placeholder={`${game.name} 같이 해요`} /></label>
         <label>비밀번호 <small>선택</small><input value={password} onChange={(event) => setPassword(event.target.value)} maxLength={40} type="password" placeholder="비워두면 공개 방" /></label>
         <p className="modal-note">방에는 최대 10명까지 들어올 수 있으며, 남는 인원은 관전합니다.</p>
-        <div className="modal-actions"><button className="secondary-button" onClick={onClose}>취소</button><button className="primary-button" onClick={() => onCreate({ gameId, title, password })}>방 만들기</button></div>
+        <div className="modal-actions"><button className="secondary-button" onClick={onClose}>취소</button><button className="primary-button" onClick={() => onCreate({ gameId, title, password, settings: supportsRounds ? { rounds } : {} })}>방 만들기</button></div>
       </div>
     </div>
   );
 }
 
-function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat }: {
+function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat, hasUnreadChat }: {
   room: ActiveRoom; identity: Identity; loading: boolean; onLeave: () => void; onStart: () => void;
-  onAction: (command: Omit<GameCommand, "playerId">) => void; onChat: () => void;
+  onAction: (command: Omit<GameCommand, "playerId">) => void; onChat: () => void; hasUnreadChat: boolean;
 }) {
   const gameInfo = GAME_BY_ID[room.gameId];
   const isHost = room.hostId === identity.id;
@@ -235,7 +343,7 @@ function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat 
       <header className="room-topbar">
         <button className="back-button" onClick={onLeave}>← 로비</button>
         <div><span className="eyebrow">{gameInfo.name}</span><h1>{room.title}</h1></div>
-        <div className="room-top-actions"><span>{room.members.length}/10명</span><button className="icon-button" onClick={onChat}>▤</button></div>
+        <div className="room-top-actions"><span>{room.members.length}/10명</span><button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={onChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button></div>
       </header>
       <main className="room-layout">
         <aside className="member-panel">
@@ -245,7 +353,7 @@ function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat 
           {!room.game && !isHost && <p className="waiting-copy">방장이 게임을 준비하고 있어요.</p>}
         </aside>
         <section className="game-panel">
-          {room.game ? <GameStage game={room.game} playerId={identity.id} viewerRole={room.viewerRole} onAction={onAction} /> : <div className="game-waiting"><div className="big-game-icon" style={{ background: gameInfo.accent }}>{gameInfo.icon}</div><span className="eyebrow">{gameInfo.minPlayers}~{gameInfo.maxPlayers}명</span><h2>{gameInfo.name}</h2><p>{gameInfo.description}</p></div>}
+          {room.game ? <GameStage game={room.game} playerId={identity.id} viewerRole={room.viewerRole} onAction={onAction} /> : <div className="game-waiting"><div className="big-game-icon" style={{ background: gameInfo.accent }}>{gameInfo.icon}</div><span className="eyebrow">{playerCountLabel(gameInfo)}{room.settings.rounds ? ` · ${room.settings.rounds}라운드` : ""}</span><h2>{gameInfo.name}</h2><p>{gameInfo.description}</p></div>}
         </section>
       </main>
     </div>
@@ -254,7 +362,7 @@ function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat 
 
 function ChatDrawer({ open, onClose, identity, snapshot, command }: {
   open: boolean; onClose: () => void; identity: Identity; snapshot: Snapshot;
-  command: (type: string, payload?: Record<string, unknown>) => Promise<any>;
+  command: (type: string, payload?: Record<string, unknown>) => Promise<unknown>;
 }) {
   const [tab, setTab] = useState<"global" | "direct">("global");
   const [body, setBody] = useState("");

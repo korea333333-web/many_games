@@ -8,6 +8,13 @@
       "when": 1785672000000,
       "tag": "0000_game_lobby",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785758400000,
+      "tag": "0001_room_game_settings",
+      "breakpoints": true
     }
   ]
 }

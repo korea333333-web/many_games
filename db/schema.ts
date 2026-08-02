@@ -21,6 +21,7 @@ export const rooms = sqliteTable(
     status: text("status").notNull().default("waiting"),
     capacity: integer("capacity").notNull().default(10),
     passwordHash: text("password_hash"),
+    settingsJson: text("settings_json").notNull().default("{}"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

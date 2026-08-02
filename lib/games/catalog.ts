@@ -7,7 +7,9 @@ export type GameId =
   | "liar"
   | "connect-four"
   | "chess"
-  | "push-out";
+  | "uno"
+  | "yut"
+  | "davinci-code";
 
 export type GameInfo = {
   id: GameId;
@@ -89,7 +91,7 @@ export const GAME_CATALOG: GameInfo[] = [
     minPlayers: 2,
     maxPlayers: 2,
     accent: "#f97316",
-    icon: "●●●●",
+    icon: "●●\n●●",
   },
   {
     id: "chess",
@@ -102,18 +104,37 @@ export const GAME_CATALOG: GameInfo[] = [
     icon: "♞",
   },
   {
-    id: "push-out",
-    name: "밀어내기",
-    shortName: "밀어내기",
-    description: "원형 경기장에서 끝까지 살아남기",
+    id: "uno",
+    name: "우노",
+    shortName: "우노",
+    description: "같은 색이나 숫자의 카드를 먼저 모두 내기",
     minPlayers: 2,
     maxPlayers: 10,
-    accent: "#22c55e",
-    icon: "☝",
+    accent: "#ef4444",
+    icon: "↻7",
+  },
+  {
+    id: "yut",
+    name: "윷놀이",
+    shortName: "윷놀이",
+    description: "윷을 던져 네 개의 말을 먼저 완주시키기",
+    minPlayers: 2,
+    maxPlayers: 4,
+    accent: "#f59e0b",
+    icon: "윷",
+  },
+  {
+    id: "davinci-code",
+    name: "다빈치 코드",
+    shortName: "다빈치",
+    description: "단서를 모아 상대의 숨겨진 숫자 맞히기",
+    minPlayers: 2,
+    maxPlayers: 4,
+    accent: "#94a3b8",
+    icon: "◆7",
   },
 ];
 
 export const GAME_BY_ID = Object.fromEntries(
   GAME_CATALOG.map((game) => [game.id, game]),
 ) as Record<GameId, GameInfo>;
-
