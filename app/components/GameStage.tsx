@@ -119,7 +119,7 @@ function VictoryScene({ gameId }: { gameId: GameId }) {
 }
 
 function playerColor(index: number) {
-  return ["#2563eb", "#fb7185", "#a3e635", "#c084fc", "#f97316", "#22c55e", "#38bdf8", "#f43f5e", "#facc15", "#94a3b8"][index % 10];
+  return ["#38bdf8", "#fb7185", "#a3e635", "#c084fc", "#f97316", "#22c55e", "#2563eb", "#f43f5e", "#facc15", "#94a3b8"][index % 10];
 }
 
 function Gomoku({ game, playerId, disabled, onAction }: GameViewProps) {

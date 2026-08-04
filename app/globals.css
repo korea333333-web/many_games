@@ -246,9 +246,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .connect-wrap { width: min(620px, 100%); }
 .drop-buttons, .connect-board { display: grid; grid-template-columns: repeat(7, 1fr); gap: 7px; }
 .drop-buttons button { height: 38px; border: 0; border-radius: 10px; background: var(--blue-soft); color: #143476; font-weight: 950; }
-.connect-board { margin-top: 8px; padding: 12px; border-radius: 20px; background: #2563eb; }
-.connect-board span { aspect-ratio: 1; border-radius: 50%; padding: 9%; background: #101827; }
-.connect-board i { display: block; width: 100%; height: 100%; border-radius: 50%; background: #eef1f7; }
+.connect-board { margin-top: 8px; padding: 12px; border: 2px solid #315778; border-radius: 20px; background: #18324a; box-shadow: inset 0 0 24px rgba(4,12,22,.38), 0 14px 28px rgba(0,0,0,.25); }
+.connect-board span { aspect-ratio: 1; border-radius: 50%; padding: 9%; background: #0c1723; box-shadow: inset 0 3px 7px rgba(0,0,0,.7), 0 1px rgba(255,255,255,.08); }
+.connect-board i { display: block; width: 100%; height: 100%; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; background: #eef1f7; box-shadow: inset 0 3px 4px rgba(255,255,255,.26), 0 4px 9px rgba(0,0,0,.38); }
 .chess-shell { position: relative; width: min(660px, 100%); margin: 0 auto; text-align: center; }
 .chess-event-stack { position: absolute; inset: 0; z-index: 10; display: grid; place-content: center; gap: 8px; overflow: hidden; pointer-events: none; }
 .chess-event-stack strong { min-width: 240px; padding: 16px 24px; border: 2px solid currentColor; border-radius: 18px; color: #fff4d8; background: rgba(35,26,16,.93); box-shadow: 0 20px 55px rgba(0,0,0,.48), inset 0 0 28px rgba(240,217,181,.13); font-size: clamp(30px, 8vw, 62px); letter-spacing: -.05em; text-shadow: 0 4px 18px rgba(0,0,0,.4); opacity: 0; animation: chess-callout 2.15s cubic-bezier(.2,.8,.2,1) both; }
