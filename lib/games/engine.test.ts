@@ -12,13 +12,15 @@ const players = [
   { id: "d", name: "태오" },
 ];
 
-test("catalog exposes ten games while keeping word chain dormant", () => {
-  assert.equal(GAME_CATALOG.length, 10);
+test("catalog exposes nine games while keeping postponed games dormant", () => {
+  assert.equal(GAME_CATALOG.length, 9);
   assert.deepEqual(GAME_CATALOG.map((game) => game.id), [
-    "gomoku", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "yut", "davinci-code",
+    "gomoku", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "davinci-code",
   ]);
   assert.equal(isGameAvailable("word-chain"), false);
+  assert.equal(isGameAvailable("yut"), false);
   assert.equal(GAME_BY_ID["word-chain"].id, "word-chain");
+  assert.equal(GAME_BY_ID.yut.id, "yut");
 });
 
 test("word chain ships with a broad local fallback dictionary", () => {

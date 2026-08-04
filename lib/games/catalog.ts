@@ -135,8 +135,9 @@ const ALL_GAMES: GameInfo[] = [
   },
 ];
 
-// 끝말잇기는 충분한 사전 데이터를 준비한 뒤 다시 공개한다.
-export const GAME_CATALOG = ALL_GAMES.filter((game) => game.id !== "word-chain");
+// 보류한 게임은 엔진을 보존한 채 로비와 새 방 만들기에서만 숨긴다.
+const HIDDEN_GAME_IDS = new Set<GameId>(["word-chain", "yut"]);
+export const GAME_CATALOG = ALL_GAMES.filter((game) => !HIDDEN_GAME_IDS.has(game.id));
 
 export function isGameAvailable(gameId: string): gameId is GameId {
   return GAME_CATALOG.some((game) => game.id === gameId);
