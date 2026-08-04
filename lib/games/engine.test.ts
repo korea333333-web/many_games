@@ -311,6 +311,38 @@ test("uno hides private cards and lets a player finish with a matching card", ()
   assert.deepEqual(game.winnerIds, ["a"]);
 });
 
+test("uno stacks +2 with +2 or +4, while +4 only accepts +4", () => {
+  let game = createGame("uno", players, 24);
+  game.state.currentColor = "red";
+  game.state.discardPile = [{ id: "top", color: "red", kind: "number", value: 3 }];
+  game.state.hands = {
+    a: [{ id: "a-plus2", color: "red", kind: "draw2" }, { id: "a-safe", color: "red", kind: "number", value: 5 }],
+    b: [{ id: "b-plus2", color: "blue", kind: "draw2" }, { id: "b-safe", color: "blue", kind: "number", value: 5 }],
+    c: [{ id: "c-plus4", color: null, kind: "wild4" }, { id: "c-safe", color: "green", kind: "number", value: 5 }],
+    d: [{ id: "d-plus2", color: "yellow", kind: "draw2" }, { id: "d-safe", color: "yellow", kind: "number", value: 5 }],
+  };
+
+  game = reduceGame(game, { type: "PLAY_CARD", playerId: "a", payload: { cardId: "a-plus2" } });
+  assert.equal(game.state.pendingDraw, 2);
+  assert.equal(game.turn, 1);
+  game = reduceGame(game, { type: "PLAY_CARD", playerId: "b", payload: { cardId: "b-plus2" } });
+  assert.equal(game.state.pendingDraw, 4);
+  assert.equal(game.turn, 2);
+  game = reduceGame(game, { type: "PLAY_CARD", playerId: "c", payload: { cardId: "c-plus4", color: "green" } });
+  assert.equal(game.state.pendingDraw, 8);
+  assert.equal(game.state.pendingDrawKind, "wild4");
+  assert.equal(game.turn, 3);
+
+  const dHandBefore = game.state.hands.d.length;
+  game = reduceGame(game, { type: "PLAY_CARD", playerId: "d", payload: { cardId: "d-plus2" } });
+  assert.match(game.message, /\+4에는 \+4만/);
+  assert.equal(game.state.hands.d.length, dHandBefore);
+  game = reduceGame(game, { type: "DRAW_CARD", playerId: "d" });
+  assert.equal(game.state.hands.d.length, dHandBefore + 8);
+  assert.equal(game.state.pendingDraw, 0);
+  assert.equal(game.turn, 0);
+});
+
 test("yut moves from home, captures an opponent and advances the turn", () => {
   let game = createGame("yut", players.slice(0, 2), 22);
   game.state.pendingMoves = [1];

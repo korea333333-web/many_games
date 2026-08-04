@@ -251,6 +251,8 @@ export function createGame(
         currentColor: topCard.color,
         direction: 1,
         reshuffleCount: 0,
+        pendingDraw: 0,
+        pendingDrawKind: null,
       };
       base.message = `${seated[0]?.name ?? "첫 플레이어"}님 차례 · ${unoColorName(topCard.color)} 카드`;
       break;
@@ -888,13 +890,20 @@ function isUnoPlayable(card: UnoCard, top: UnoCard, currentColor: UnoColor) {
 function reduceUno(game: GameEnvelope, command: GameCommand) {
   if (!assertTurn(game, command.playerId)) return fail(game, "지금은 내 차례가 아닙니다.");
   const hand = game.state.hands[command.playerId] as UnoCard[];
+  const pendingDraw = Number(game.state.pendingDraw ?? 0);
+  const pendingDrawKind = game.state.pendingDrawKind as "draw2" | "wild4" | null;
   if (command.type === "DRAW_CARD") {
     const before = hand.length;
-    drawUnoCards(game, command.playerId, 1);
+    const drawCount = pendingDraw || 1;
+    drawUnoCards(game, command.playerId, drawCount);
     if (hand.length === before) return fail(game, "더 뽑을 카드가 없습니다.");
+    game.state.pendingDraw = 0;
+    game.state.pendingDrawKind = null;
     game.turn = nextIndex(game, game.turn, 1, game.state.direction);
-    game.message = `${game.players[game.turn].name}님 차례`;
-    game.log = appendLog(game, `${game.players[playerIndex(game, command.playerId)].name} 카드 1장 뽑기`);
+    game.message = pendingDraw
+      ? `${game.players[playerIndex(game, command.playerId)].name}님이 누적 카드 ${hand.length - before}장을 받았습니다. ${game.players[game.turn].name}님 차례`
+      : `${game.players[game.turn].name}님 차례`;
+    game.log = appendLog(game, `${game.players[playerIndex(game, command.playerId)].name} 카드 ${hand.length - before}장 뽑기`);
     return game;
   }
   if (command.type !== "PLAY_CARD") return fail(game, "카드를 내거나 한 장 뽑으세요.");
@@ -902,7 +911,12 @@ function reduceUno(game: GameEnvelope, command: GameCommand) {
   if (cardIndex < 0) return fail(game, "내 손에 없는 카드입니다.");
   const card = hand[cardIndex];
   const top = (game.state.discardPile as UnoCard[]).at(-1)!;
-  if (!isUnoPlayable(card, top, game.state.currentColor)) return fail(game, "같은 색, 숫자 또는 기호의 카드만 낼 수 있습니다.");
+  if (pendingDraw) {
+    const canStack = card.kind === "wild4" || (pendingDrawKind === "draw2" && card.kind === "draw2");
+    if (!canStack) return fail(game, pendingDrawKind === "wild4" ? "+4에는 +4만 이어낼 수 있습니다." : "+2 또는 +4로 막거나 누적 카드를 받아야 합니다.");
+  } else if (!isUnoPlayable(card, top, game.state.currentColor)) {
+    return fail(game, "같은 색, 숫자 또는 기호의 카드만 낼 수 있습니다.");
+  }
   const chosenColor = String(command.payload?.color ?? "") as UnoColor;
   if (!card.color && !["red", "yellow", "green", "blue"].includes(chosenColor)) return fail(game, "와일드 카드의 색을 골라주세요.");
 
@@ -912,18 +926,21 @@ function reduceUno(game: GameEnvelope, command: GameCommand) {
   game.log = appendLog(game, `${game.players[game.turn].name} ${unoCardLabel(card)} 내기`);
   if (!hand.length) return finish(game, [command.playerId], `${game.players[game.turn].name}님이 카드를 모두 냈습니다!`);
 
+  if (card.kind === "draw2" || card.kind === "wild4") {
+    game.state.pendingDraw = pendingDraw + (card.kind === "draw2" ? 2 : 4);
+    game.state.pendingDrawKind = card.kind;
+    game.turn = nextIndex(game, game.turn, 1, game.state.direction);
+    const response = card.kind === "wild4" ? "+4만 낼 수 있어요." : "+2 또는 +4를 낼 수 있어요.";
+    game.message = `${game.players[game.turn].name}님에게 +${game.state.pendingDraw} 누적! ${response}`;
+    return game;
+  }
+
   let steps = 1;
   if (card.kind === "reverse") {
     game.state.direction *= -1;
     if (game.players.length === 2) steps = 2;
   }
   if (card.kind === "skip") steps = 2;
-  if (card.kind === "draw2" || card.kind === "wild4") {
-    const punishedIndex = nextIndex(game, game.turn, 1, game.state.direction);
-    const drawCount = card.kind === "draw2" ? 2 : 4;
-    drawUnoCards(game, game.players[punishedIndex].id, drawCount);
-    steps = 2;
-  }
   game.turn = nextIndex(game, game.turn, steps, game.state.direction);
   game.message = `${game.players[game.turn].name}님 차례 · ${unoColorName(game.state.currentColor)}`;
   return game;

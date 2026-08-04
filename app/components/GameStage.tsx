@@ -368,6 +368,9 @@ function Uno({ game, playerId, disabled, onAction }: GameViewProps) {
   const discard = game.state.discardPile as UnoCard[];
   const top = discard.at(-1);
   const myTurn = game.players[game.turn]?.id === playerId;
+  const pendingDraw = Number(game.state.pendingDraw ?? 0);
+  const pendingDrawKind = game.state.pendingDrawKind as "draw2" | "wild4" | null;
+  const canStack = (card: UnoCard) => !pendingDraw || card.kind === "wild4" || (pendingDrawKind === "draw2" && card.kind === "draw2");
   const play = (card: UnoCard) => {
     if (!card.color) setWildCardId(card.id);
     else onAction({ type: "PLAY_CARD", payload: { cardId: card.id } });
@@ -382,13 +385,14 @@ function Uno({ game, playerId, disabled, onAction }: GameViewProps) {
         ))}
       </div>
       <div className="uno-table">
-        <button className="uno-draw-pile" disabled={disabled || !myTurn || game.phase === "finished"} onClick={() => onAction({ type: "DRAW_CARD" })}><span>DRAW</span><b>{game.state.drawPile.length}</b><small>한 장 뽑기</small></button>
+        {pendingDraw > 0 && <div className="uno-stack-alert" role="status"><span>누적 공격</span><strong>+{pendingDraw}</strong><small>{pendingDrawKind === "wild4" ? "+4만 이어낼 수 있어요" : "+2 또는 +4로 이어낼 수 있어요"}</small></div>}
+        <button className={pendingDraw ? "uno-draw-pile penalty" : "uno-draw-pile"} disabled={disabled || !myTurn || game.phase === "finished"} onClick={() => onAction({ type: "DRAW_CARD" })}><span>{pendingDraw ? "TAKE" : "DRAW"}</span><b>{pendingDraw ? `+${pendingDraw}` : game.state.drawPile.length}</b><small>{pendingDraw ? `${pendingDraw}장 받기` : "한 장 뽑기"}</small></button>
         <div className="uno-discard">{top && <UnoCardFace card={top} />}</div>
         <div className={`uno-current-color ${game.state.currentColor}`}><i />{UNO_COLOR_NAMES[game.state.currentColor as UnoColor]}</div>
       </div>
       <div className="uno-my-area">
-        <div><b>내 카드</b><small>{myTurn ? "내 차례" : `${game.players[game.turn]?.name}님 차례`}</small></div>
-        <div className="uno-hand">{myHand.map((card) => <button key={card.id} disabled={disabled || !myTurn || game.phase === "finished"} onClick={() => play(card)} aria-label={`${card.color ? UNO_COLOR_NAMES[card.color] : "와일드"} ${unoCardText(card)}`}><UnoCardFace card={card} compact /></button>)}</div>
+        <div><b>내 카드</b><small>{myTurn ? pendingDraw ? "누적하거나 카드를 받아야 해요" : "내 차례" : `${game.players[game.turn]?.name}님 차례`}</small></div>
+        <div className="uno-hand">{myHand.map((card) => <button key={card.id} className={pendingDraw && canStack(card) ? "stackable" : ""} disabled={disabled || !myTurn || game.phase === "finished" || !canStack(card)} onClick={() => play(card)} aria-label={`${card.color ? UNO_COLOR_NAMES[card.color] : "와일드"} ${unoCardText(card)}`}><UnoCardFace card={card} compact /></button>)}</div>
       </div>
       {wildCardId && <div className="uno-color-picker"><div><b>바꿀 색을 고르세요</b><div>{(Object.keys(UNO_COLOR_NAMES) as UnoColor[]).map((color) => <button key={color} className={color} onClick={() => { onAction({ type: "PLAY_CARD", payload: { cardId: wildCardId, color } }); setWildCardId(null); }}>{UNO_COLOR_NAMES[color]}</button>)}</div><button className="cancel" onClick={() => setWildCardId(null)}>취소</button></div></div>}
     </div>
