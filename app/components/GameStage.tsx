@@ -89,7 +89,18 @@ function ConnectFour({ game, playerId, disabled, onAction }: GameViewProps) {
   return <div className="connect-wrap"><div className="drop-buttons">{Array.from({ length: 7 }, (_, col) => <button key={col} disabled={disabled || !myTurn || game.phase === "finished"} onClick={() => onAction({ type: "DROP", payload: { col } })}>↓</button>)}</div><div className="connect-board">{board.map((owner, index) => <span key={index}><i style={owner ? { background: playerColor(game.players.findIndex((p) => p.id === owner)) } : undefined} /></span>)}</div></div>;
 }
 
-const PIECES: Record<string, string> = { wK: "♚", wQ: "♛", wR: "♜", wB: "♝", wN: "♞", wP: "♟", bK: "♚", bQ: "♛", bR: "♜", bB: "♝", bN: "♞", bP: "♟" };
+const PIECES: Record<string, string> = {
+  wK: "♔", wQ: "♕", wR: "♖", wB: "♗", wN: "♘", wP: "♙",
+  bK: "♚", bQ: "♛", bR: "♜", bB: "♝", bN: "♞", bP: "♟",
+};
+
+const CHESS_PIECE_NAMES: Record<string, string> = {
+  K: "킹", Q: "퀸", R: "룩", B: "비숍", N: "나이트", P: "폰",
+};
+
+function chessCoordinate(index: number) {
+  return `${String.fromCharCode(97 + (index % 8))}${8 - Math.floor(index / 8)}`;
+}
 
 function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
   const [selection, setSelection] = useState<{ index: number; turn: number } | null>(null);
@@ -98,19 +109,95 @@ function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
   const viewerIndex = game.players.findIndex((item) => item.id === playerId);
   const myColor = viewerIndex === 1 ? "b" : "w";
   const blackView = viewerIndex === 1;
+  const topPlayerIndex = blackView ? 0 : 1;
+  const bottomPlayerIndex = blackView ? 1 : 0;
+  const topPlayer = game.players[topPlayerIndex];
+  const bottomPlayer = game.players[bottomPlayerIndex];
+  const lastMove = game.state.lastMove as { from: number; to: number; san?: string } | null;
   const selected = selection?.turn === game.turn ? selection.index : null;
   const displayIndexes = useMemo(() => getChessViewIndexes(game, playerId), [game, playerId]);
   const legalTargets = useMemo(() => selected === null ? [] : getChessLegalTargets(game, playerId, selected), [game, playerId, selected]);
   const click = (index: number) => {
     if (disabled || !myTurn || game.phase === "finished") return;
     const piece = board[index];
-    if (piece?.[0] === myColor) { setSelection({ index, turn: game.turn }); return; }
+    if (piece?.[0] === myColor) {
+      setSelection((current) => current?.index === index ? null : { index, turn: game.turn });
+      return;
+    }
     if (selected !== null && legalTargets.includes(index)) {
       onAction({ type: "MOVE", payload: { from: selected, to: index } });
       setSelection(null);
+      return;
     }
+    setSelection(null);
   };
-  return <div className="chess-shell"><div className="chess-board">{displayIndexes.map((index) => { const piece = board[index]; const legal = legalTargets.includes(index); const className = [selected === index ? "selected" : "", legal ? "legal-target" : "", legal && piece ? "capture-target" : ""].filter(Boolean).join(" "); return <button key={index} className={className} onClick={() => click(index)} aria-label={`${Math.floor(index / 8) + 1}행 ${index % 8 + 1}열${piece ? ` ${piece}` : ""}`}>{piece && <span className={`chess-piece ${piece[0] === "w" ? "white" : "black"}`}>{PIECES[piece]}</span>}</button>; })}</div><p>{blackView ? "흑" : "백"} 시점 · 표시된 칸으로 이동 · 왕을 잡으면 승리</p></div>;
+
+  const playerBar = (player: typeof topPlayer, playerIndex: number, position: "top" | "bottom") => {
+    const color = playerIndex === 0 ? "white" : "black";
+    const active = game.phase !== "finished" && game.turn === playerIndex;
+    return (
+      <div className={`chess-player-bar ${position} ${active ? "active" : ""}`}>
+        <span className={`chess-color-token ${color}`} aria-hidden="true">{color === "white" ? "♔" : "♚"}</span>
+        <div><strong>{player?.name ?? "플레이어"}</strong><small>{color === "white" ? "백" : "흑"}{player?.id === playerId ? " · 나" : ""}</small></div>
+        <span className="chess-player-state">{active ? "두는 중" : game.phase === "finished" ? "종료" : "대기"}</span>
+      </div>
+    );
+  };
+
+  const status = disabled
+    ? "관전 중"
+    : myTurn
+      ? game.state.inCheck ? "체크! 왕을 지켜야 합니다" : "내 차례입니다"
+      : "상대가 두는 중입니다";
+
+  return (
+    <div className="chess-shell">
+      {playerBar(topPlayer, topPlayerIndex, "top")}
+      <div className="chess-board-frame">
+        <div className="chess-board" role="group" aria-label={`${blackView ? "흑" : "백"} 시점 체스판`}>
+          {displayIndexes.map((index, displayPosition) => {
+            const piece = board[index];
+            const row = Math.floor(index / 8);
+            const col = index % 8;
+            const displayRow = Math.floor(displayPosition / 8);
+            const displayCol = displayPosition % 8;
+            const legal = legalTargets.includes(index);
+            const squareColor = (row + col) % 2 === 0 ? "light" : "dark";
+            const className = [
+              "chess-square",
+              squareColor,
+              selected === index ? "selected" : "",
+              legal ? "legal-target" : "",
+              legal && piece ? "capture-target" : "",
+              lastMove && (lastMove.from === index || lastMove.to === index) ? "last-move" : "",
+            ].filter(Boolean).join(" ");
+            const coordinate = chessCoordinate(index);
+            const pieceName = piece ? `${piece[0] === "w" ? "백" : "흑"} ${CHESS_PIECE_NAMES[piece[1]]}` : "빈 칸";
+            return (
+              <button
+                key={index}
+                className={className}
+                onClick={() => click(index)}
+                disabled={disabled || !myTurn || game.phase === "finished"}
+                aria-label={`${coordinate} ${pieceName}`}
+                aria-pressed={selected === index}
+              >
+                {displayCol === 0 && <span className="chess-rank-label" aria-hidden="true">{8 - row}</span>}
+                {displayRow === 7 && <span className="chess-file-label" aria-hidden="true">{String.fromCharCode(97 + col)}</span>}
+                {piece && <span className={`chess-piece ${piece[0] === "w" ? "white" : "black"}`} aria-hidden="true">{PIECES[piece]}</span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {playerBar(bottomPlayer, bottomPlayerIndex, "bottom")}
+      <div className={`chess-status ${myTurn ? "mine" : ""} ${game.state.inCheck ? "check" : ""}`} role="status">
+        <span>{status}</span>
+        {lastMove?.san && <small>최근 수 {lastMove.san}</small>}
+      </div>
+      <p className="chess-help">기물을 선택하면 이동 가능한 칸이 표시됩니다 · 체크메이트, 캐슬링, 앙파상 적용</p>
+    </div>
+  );
 }
 
 function WordChain({ game, playerId, disabled, onAction }: GameViewProps) {

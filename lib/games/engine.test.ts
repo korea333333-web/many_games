@@ -184,7 +184,7 @@ test("liar projection hides the word only from the liar", () => {
   assert.ok(projectGame(game, citizen.id).state.word);
 });
 
-test("casual chess allows a legal pawn move", () => {
+test("chess allows a legal pawn move", () => {
   let game = createGame("chess", players.slice(0, 2), 8);
   game = reduceGame(game, { type: "MOVE", playerId: "a", payload: { from: 52, to: 36 } });
   assert.equal(game.state.board[36], "wP");
@@ -194,8 +194,10 @@ test("casual chess allows a legal pawn move", () => {
 test("chess pawn can capture diagonally", () => {
   let game = createGame("chess", players.slice(0, 2), 10);
   game.state.board = Array(64).fill(null);
+  game.state.board[4] = "bK";
   game.state.board[36] = "wP";
   game.state.board[27] = "bP";
+  game.state.board[60] = "wK";
   assert.ok(getChessLegalTargets(game, "a", 36).includes(27));
   game = reduceGame(game, { type: "MOVE", playerId: "a", payload: { from: 36, to: 27 } });
   assert.equal(game.state.board[27], "wP");
@@ -206,6 +208,38 @@ test("the black chess player sees the board from the black side", () => {
   const game = createGame("chess", players.slice(0, 2), 12);
   assert.deepEqual(getChessViewIndexes(game, "a").slice(0, 3), [0, 1, 2]);
   assert.deepEqual(getChessViewIndexes(game, "b").slice(0, 3), [63, 62, 61]);
+});
+
+test("chess supports kingside castling", () => {
+  let game = createGame("chess", players.slice(0, 2), 13);
+  const moves = [
+    ["a", 52, 36], ["b", 12, 28],
+    ["a", 62, 45], ["b", 1, 18],
+    ["a", 61, 34], ["b", 6, 21],
+    ["a", 60, 62],
+  ] as const;
+  for (const [playerId, from, to] of moves) {
+    game = reduceGame(game, { type: "MOVE", playerId, payload: { from, to } });
+  }
+  assert.equal(game.state.board[62], "wK");
+  assert.equal(game.state.board[61], "wR");
+  assert.equal(game.state.lastMove.san, "O-O");
+});
+
+test("chess finishes on checkmate instead of capturing the king", () => {
+  let game = createGame("chess", players.slice(0, 2), 14);
+  const moves = [
+    ["a", 52, 36], ["b", 12, 28],
+    ["a", 61, 34], ["b", 1, 18],
+    ["a", 59, 31], ["b", 6, 21],
+    ["a", 31, 13],
+  ] as const;
+  for (const [playerId, from, to] of moves) {
+    game = reduceGame(game, { type: "MOVE", playerId, payload: { from, to } });
+  }
+  assert.equal(game.phase, "finished");
+  assert.deepEqual(game.winnerIds, ["a"]);
+  assert.match(game.message, /체크메이트/);
 });
 
 test("uno hides private cards and lets a player finish with a matching card", () => {

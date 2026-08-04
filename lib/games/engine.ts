@@ -1,4 +1,5 @@
 import type { GameId } from "./catalog.ts";
+import { Chess, DEFAULT_POSITION, type Square } from "chess.js";
 import {
   CHOSUNG_QUESTIONS,
   DRAWING_PROMPTS,
@@ -163,7 +164,12 @@ export function createGame(
       base.state = { rows: 6, cols: 7, board: Array(42).fill(null) };
       break;
     case "chess":
-      base.state = { board: initialChessBoard(), selected: null };
+      base.state = {
+        board: initialChessBoard(),
+        fen: DEFAULT_POSITION,
+        lastMove: null,
+        inCheck: false,
+      };
       break;
     case "word-chain":
       base.state = {
@@ -457,52 +463,81 @@ function initialChessBoard() {
   ] as Array<string | null>;
 }
 
+function chessSquare(index: number): Square {
+  const row = Math.floor(index / 8);
+  const col = index % 8;
+  return `${String.fromCharCode(97 + col)}${8 - row}` as Square;
+}
+
+function chessIndex(square: string) {
+  return (8 - Number(square[1])) * 8 + square.charCodeAt(0) - 97;
+}
+
+function chessBoard(chess: Chess) {
+  return chess.board().flat().map((piece) => piece ? `${piece.color}${piece.type.toUpperCase()}` : null);
+}
+
+function chessFenFromBoard(board: Array<string | null>, turn: number) {
+  const placement = Array.from({ length: 8 }, (_, row) => {
+    let empty = 0;
+    let rank = "";
+    for (let col = 0; col < 8; col++) {
+      const piece = board[row * 8 + col];
+      if (!piece) {
+        empty += 1;
+        continue;
+      }
+      if (empty) { rank += String(empty); empty = 0; }
+      const symbol = piece[1];
+      rank += piece[0] === "w" ? symbol : symbol.toLowerCase();
+    }
+    return rank + (empty ? String(empty) : "");
+  }).join("/");
+  return `${placement} ${turn === 1 ? "b" : "w"} - - 0 1`;
+}
+
+function chessFromGame(game: GameEnvelope) {
+  const board = game.state.board as Array<string | null>;
+  if (typeof game.state.fen === "string") {
+    try {
+      const saved = new Chess(game.state.fen);
+      const savedBoard = chessBoard(saved);
+      if (savedBoard.every((piece, index) => piece === board[index])) return saved;
+    } catch {
+      // Legacy rooms can fall back to their serialized board below.
+    }
+  }
+  return new Chess(chessFenFromBoard(board, game.turn), { skipValidation: true });
+}
+
 function reduceChess(game: GameEnvelope, command: GameCommand) {
   if (command.type !== "MOVE") return fail(game, "움직일 말을 선택하세요.");
   if (!assertTurn(game, command.playerId)) return fail(game, "내 차례가 아닙니다.");
   const from = Number(command.payload?.from);
   const to = Number(command.payload?.to);
-  const board = game.state.board as Array<string | null>;
   if (![from, to].every((n) => Number.isInteger(n) && n >= 0 && n < 64)) return fail(game, "잘못된 칸입니다.");
+  const board = game.state.board as Array<string | null>;
   const piece = board[from];
   const color = game.turn === 0 ? "w" : "b";
   if (!piece || piece[0] !== color) return fail(game, "내 말을 선택하세요.");
-  if (!isLegalChessMove(board, from, to, piece)) return fail(game, "그 말은 그렇게 움직일 수 없습니다.");
-  const captured = board[to];
-  board[to] = piece;
-  board[from] = null;
-  if (piece[1] === "P" && (Math.floor(to / 8) === 0 || Math.floor(to / 8) === 7)) board[to] = `${color}Q`;
-  if (captured?.[1] === "K") return finish(game, [command.playerId], `${game.players[game.turn].name}가 왕을 잡았습니다!`);
-  game.turn = (game.turn + 1) % 2;
-  game.message = `${game.players[game.turn].name} 차례 · 캐주얼 규칙`;
-  return game;
-}
-
-function isLegalChessMove(board: Array<string | null>, from: number, to: number, piece: string) {
-  if (from === to || board[to]?.[0] === piece[0]) return false;
-  const fr = Math.floor(from / 8), fc = from % 8, tr = Math.floor(to / 8), tc = to % 8;
-  const dr = tr - fr, dc = tc - fc, ar = Math.abs(dr), ac = Math.abs(dc);
-  const pathClear = () => {
-    const sr = Math.sign(dr), sc = Math.sign(dc);
-    let r = fr + sr, c = fc + sc;
-    while (r !== tr || c !== tc) { if (board[r * 8 + c]) return false; r += sr; c += sc; }
-    return true;
-  };
-  switch (piece[1]) {
-    case "P": {
-      const direction = piece[0] === "w" ? -1 : 1;
-      const start = piece[0] === "w" ? 6 : 1;
-      if (dc === 0 && dr === direction && !board[to]) return true;
-      if (dc === 0 && fr === start && dr === direction * 2 && !board[to] && !board[(fr + direction) * 8 + fc]) return true;
-      return ac === 1 && dr === direction && Boolean(board[to]);
-    }
-    case "N": return (ar === 2 && ac === 1) || (ar === 1 && ac === 2);
-    case "B": return ar === ac && pathClear();
-    case "R": return (dr === 0 || dc === 0) && pathClear();
-    case "Q": return (dr === 0 || dc === 0 || ar === ac) && pathClear();
-    case "K": return ar <= 1 && ac <= 1;
-    default: return false;
+  const chess = chessFromGame(game);
+  let move;
+  try {
+    move = chess.move({ from: chessSquare(from), to: chessSquare(to), promotion: "q" });
+  } catch {
+    return fail(game, "체스 규칙상 이동할 수 없는 칸입니다.");
   }
+  game.state.board = chessBoard(chess);
+  game.state.fen = chess.fen();
+  game.state.lastMove = { from, to, san: move.san };
+  game.state.inCheck = chess.inCheck();
+  game.turn = chess.turn() === "w" ? 0 : 1;
+  if (chess.isCheckmate()) return finish(game, [command.playerId], `${game.players.find((player) => player.id === command.playerId)?.name} 체크메이트!`);
+  if (chess.isDraw()) return finish(game, [], chess.isStalemate() ? "스테일메이트 · 무승부" : "무승부로 게임이 끝났습니다.");
+  game.message = chess.inCheck()
+    ? `체크! ${game.players[game.turn].name}가 왕을 지켜야 합니다.`
+    : `${game.players[game.turn].name} 차례`;
+  return game;
 }
 
 export function getChessLegalTargets(game: GameEnvelope, playerId: string, from: number) {
@@ -512,7 +547,13 @@ export function getChessLegalTargets(game: GameEnvelope, playerId: string, from:
   const piece = board[from];
   const color = player === 0 ? "w" : "b";
   if (!piece || piece[0] !== color) return [];
-  return Array.from({ length: 64 }, (_, index) => index).filter((to) => isLegalChessMove(board, from, to, piece));
+  try {
+    return chessFromGame(game)
+      .moves({ square: chessSquare(from), verbose: true })
+      .map((move) => chessIndex(move.to));
+  } catch {
+    return [];
+  }
 }
 
 export function getChessViewIndexes(game: GameEnvelope, playerId: string) {
