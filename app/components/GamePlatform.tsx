@@ -29,6 +29,7 @@ type Snapshot = {
 };
 
 const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], globalMessages: [], directMessages: [], activeRoom: null };
+const TIMED_GAME_IDS = new Set<GameId>(["word-chain", "drawing", "chosung", "same-answer"]);
 const ACTION_LOADING_LABELS: Record<string, string> = {
   createRoom: "새 방을 만들고 있어요",
   joinRoom: "방에 들어가는 중이에요",
@@ -139,6 +140,9 @@ export function GamePlatform() {
     finally { pollInFlight.current = false; }
   }, [refresh]);
 
+  const activeGameId = snapshot.activeRoom?.game?.gameId ?? null;
+  const activeGamePhase = snapshot.activeRoom?.game?.phase ?? null;
+
   useEffect(() => {
     if (!identity) return;
     let cancelled = false;
@@ -185,12 +189,13 @@ export function GamePlatform() {
   useEffect(() => {
     if (!identity) return;
     void syncNow();
+    const needsTimerSync = Boolean(activeGameId && activeGamePhase !== "finished" && TIMED_GAME_IDS.has(activeGameId));
     const fallbackInterval = realtimeConnected
-      ? activeRoomId ? 8_000 : 15_000
+      ? needsTimerSync ? 1_000 : activeRoomId ? 8_000 : 15_000
       : activeRoomId ? 800 : 1_600;
     const timer = window.setInterval(() => void syncNow(), fallbackInterval);
     return () => window.clearInterval(timer);
-  }, [identity, activeRoomId, realtimeConnected, syncNow]);
+  }, [identity, activeRoomId, realtimeConnected, activeGameId, activeGamePhase, syncNow]);
 
   const command = useCallback(async (type: string, payload: Record<string, unknown> = {}) => {
     if (!identity) return null;
