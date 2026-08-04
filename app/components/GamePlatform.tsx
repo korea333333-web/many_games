@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { GAME_BY_ID, GAME_CATALOG, type GameId, type GameInfo } from "@/lib/games/catalog";
 import type { GameCommand, GameEnvelope } from "@/lib/games/engine";
 import { hasUnreadMessage, latestMessageId } from "@/lib/chat/unread";
+import { getRealtimeClient } from "@/lib/supabase/realtime-client";
 import { GameStage } from "./GameStage";
 
 const GameRulebook = dynamic(() => import("./GameRulebook").then((module) => module.GameRulebook), { ssr: false });
@@ -62,6 +64,7 @@ export function GamePlatform() {
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("잠시만 기다려 주세요");
   const [gameSyncing, setGameSyncing] = useState(false);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [rulebookOpen, setRulebookOpen] = useState(false);
   const [rulebookGameId, setRulebookGameId] = useState<GameId>("gomoku");
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
@@ -71,6 +74,7 @@ export function GamePlatform() {
   const latestObservedMessageIdRef = useRef(0);
   const lastReadMessageIdRef = useRef<number | null>(null);
   const chatOpenRef = useRef(false);
+  const realtimeRefreshTimer = useRef<number | null>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem("game-lobby-identity");
@@ -128,18 +132,65 @@ export function GamePlatform() {
     }
   }, [identity, activeRoomId, applySnapshot]);
 
+  const syncNow = useCallback(async () => {
+    if (document.hidden || pollInFlight.current || pendingGameActions.current > 0) return;
+    pollInFlight.current = true;
+    try { await refresh(); }
+    finally { pollInFlight.current = false; }
+  }, [refresh]);
+
   useEffect(() => {
     if (!identity) return;
-    const poll = async () => {
-      if (document.hidden || pollInFlight.current) return;
-      pollInFlight.current = true;
-      try { await refresh(); }
-      finally { pollInFlight.current = false; }
+    let cancelled = false;
+    const topics = ["lobby", ...(activeRoomId ? [`room:${activeRoomId}`] : [])];
+    const subscribed = new Set<string>();
+    let realtimeClient: SupabaseClient | null = null;
+    let channels: RealtimeChannel[] = [];
+
+    void getRealtimeClient().then((client) => {
+      realtimeClient = client;
+      if (cancelled) return;
+      channels = topics.map((topic) => client
+        .channel(topic)
+        .on("broadcast", { event: "state-changed" }, ({ payload }) => {
+          if (payload?.origin === identity.id) return;
+          if (realtimeRefreshTimer.current !== null) window.clearTimeout(realtimeRefreshTimer.current);
+          realtimeRefreshTimer.current = window.setTimeout(() => void syncNow(), 24);
+        })
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            subscribed.add(topic);
+            if (subscribed.size === topics.length) setRealtimeConnected(true);
+          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            subscribed.delete(topic);
+            setRealtimeConnected(false);
+          }
+        }));
+    }).catch(() => {
+      if (!cancelled) setRealtimeConnected(false);
+    });
+
+    return () => {
+      cancelled = true;
+      if (realtimeRefreshTimer.current !== null) {
+        window.clearTimeout(realtimeRefreshTimer.current);
+        realtimeRefreshTimer.current = null;
+      }
+      if (realtimeClient) {
+        void Promise.all(channels.map((channel) => realtimeClient!.removeChannel(channel)));
+      }
     };
-    void poll();
-    const timer = window.setInterval(() => void poll(), activeRoomId ? 300 : 1600);
+  }, [identity, activeRoomId, syncNow]);
+
+  useEffect(() => {
+    if (!identity) return;
+    void syncNow();
+    const fallbackInterval = realtimeConnected
+      ? activeRoomId ? 8_000 : 15_000
+      : activeRoomId ? 800 : 1_600;
+    const timer = window.setInterval(() => void syncNow(), fallbackInterval);
     return () => window.clearInterval(timer);
-  }, [identity, activeRoomId, refresh]);
+  }, [identity, activeRoomId, realtimeConnected, syncNow]);
 
   const command = useCallback(async (type: string, payload: Record<string, unknown> = {}) => {
     if (!identity) return null;

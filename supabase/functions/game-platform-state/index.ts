@@ -109,6 +109,10 @@ Deno.serve(async (request: Request) => {
     if (!body.data || typeof body.data !== "object" || Array.isArray(body.data)) {
       return json({ error: "Invalid state" }, 400);
     }
+    const topics = Array.isArray(body.topics)
+      ? [...new Set(body.topics.filter((topic): topic is string => typeof topic === "string" && /^(lobby|room:[a-zA-Z0-9_-]{1,80})$/.test(topic)))].slice(0, 24)
+      : [];
+    const origin = typeof body.origin === "string" ? body.origin.slice(0, 120) : null;
     const serialized = JSON.stringify(body.data);
     if (new TextEncoder().encode(serialized).byteLength > MAX_STATE_BYTES) {
       return json({ error: "State is too large" }, 413);
@@ -121,6 +125,8 @@ Deno.serve(async (request: Request) => {
       body: JSON.stringify({
         revision: expectedRevision + 1,
         data: body.data,
+        last_topics: topics,
+        last_origin: origin,
         updated_at: new Date().toISOString(),
       }),
       cache: "no-store",

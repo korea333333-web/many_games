@@ -10,6 +10,7 @@ import {
   type GameOptions,
 } from "../games/engine.ts";
 import { isKnownWord } from "./word-dictionary.ts";
+import { getStateChangeTopics } from "./state-change-topics.ts";
 
 type JsonRecord = Record<string, unknown>;
 type MemberRole = "player" | "spectator";
@@ -151,7 +152,13 @@ async function readState(auth?: StateAuth): Promise<StoredState> {
   return { revision: Number(row.revision), data: normalizeState(row.data) };
 }
 
-async function compareAndSwap(expectedRevision: number, data: PlatformState, auth?: StateAuth) {
+async function compareAndSwap(
+  expectedRevision: number,
+  data: PlatformState,
+  auth?: StateAuth,
+  topics: string[] = [],
+  origin?: string | null,
+) {
   const { baseUrl } = getSupabaseConfig();
   const response = await fetch(`${baseUrl}/functions/v1/game-platform-state`, {
     method: "POST",
@@ -160,6 +167,8 @@ async function compareAndSwap(expectedRevision: number, data: PlatformState, aut
       action: "cas",
       expectedRevision,
       data,
+      topics,
+      origin,
     }),
     cache: "no-store",
   });
@@ -174,6 +183,7 @@ async function compareAndSwap(expectedRevision: number, data: PlatformState, aut
 async function mutateState<T>(
   mutator: (state: PlatformState) => Promise<MutationResult<T>> | MutationResult<T>,
   auth?: StateAuth,
+  origin?: string | null,
   attempts = 5,
 ): Promise<{ value: T; state: PlatformState }> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -181,7 +191,8 @@ async function mutateState<T>(
     const next = structuredClone(stored.data);
     const result = await mutator(next);
     if (result.changed === false) return { value: result.value, state: stored.data };
-    if (await compareAndSwap(stored.revision, next, auth)) return { value: result.value, state: next };
+    const topics = getStateChangeTopics(stored.data, next);
+    if (await compareAndSwap(stored.revision, next, auth, topics, origin)) return { value: result.value, state: next };
   }
   throw new Error("다른 플레이어의 행동과 겹쳤습니다. 다시 시도해 주세요.");
 }
@@ -442,10 +453,11 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
 }
 
 export async function touchPlayer(playerIdRaw: unknown, nicknameRaw: unknown, auth?: StateAuth) {
+  const playerId = cleanId(playerIdRaw);
   const result = await mutateState((state) => {
-    const actor = upsertPlayer(state, playerIdRaw, nicknameRaw, true);
+    const actor = upsertPlayer(state, playerId, nicknameRaw, true);
     return { value: actor.player, changed: actor.changed };
-  }, auth);
+  }, auth, playerId);
   return result.value;
 }
 
@@ -457,7 +469,7 @@ export async function getSnapshot(playerIdRaw: unknown, roomIdRaw?: unknown, nic
     if (playerId) changed = upsertPlayer(state, playerId, nicknameRaw).changed || changed;
     if (roomId) changed = advanceRoomGame(state, roomId) || changed;
     return { value: null, changed };
-  }, auth);
+  }, auth, playerId);
   return makeSnapshot(result.state, playerId, roomId);
 }
 
@@ -480,7 +492,7 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
     if (type === "sendGlobal") return { value: sendMessage(state, actor.id, null, "global", payload.body) };
     if (type === "sendDirect") return { value: sendMessage(state, actor.id, cleanId(payload.recipientId), "direct", payload.body) };
     throw new Error("지원하지 않는 요청입니다.");
-  }, auth);
+  }, auth, playerId);
   const value = asRecord(result.value);
   const valueRoomId = cleanText(value.roomId, 80);
   const snapshotRoomId = type === "leaveRoom" ? "" : valueRoomId || requestedRoomId || cleanText(payload.roomId, 80);
