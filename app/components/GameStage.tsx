@@ -19,11 +19,13 @@ const INSTANT_GAMES = new Set<GameId>(["gomoku", "connect-four", "chess"]);
 
 export function GameStage({ game, revision, playerId, viewerRole, onAction }: Props) {
   const [optimistic, setOptimistic] = useState<{ revision: number; game: GameEnvelope } | null>(null);
+  const [inspectedChessSeed, setInspectedChessSeed] = useState<number | null>(null);
   const shownGame = optimistic?.revision === revision ? optimistic.game : game;
   const info = GAME_BY_ID[shownGame.gameId];
   const player = shownGame.players.find((item) => item.id === playerId);
   const spectator = viewerRole === "spectator" || !player;
   const winners = shownGame.players.filter((item) => shownGame.winnerIds.includes(item.id));
+  const inspectingFinalChessBoard = shownGame.gameId === "chess" && shownGame.phase === "finished" && inspectedChessSeed === shownGame.seed;
   const runAction = (command: Omit<GameCommand, "playerId">) => {
     if (INSTANT_GAMES.has(shownGame.gameId) && shownGame.phase === "playing" && !spectator) {
       const now = Date.now();
@@ -53,7 +55,13 @@ export function GameStage({ game, revision, playerId, viewerRole, onAction }: Pr
         {shownGame.gameId === "davinci-code" && <DavinciCode game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
       </div>
       {shownGame.feedback && <AnswerFeedback game={shownGame} playerId={playerId} />}
-      {shownGame.phase === "finished" && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} />}
+      {shownGame.phase === "finished" && !inspectingFinalChessBoard && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} onInspectBoard={shownGame.gameId === "chess" ? () => setInspectedChessSeed(shownGame.seed) : undefined} />}
+      {inspectingFinalChessBoard && (
+        <div className="chess-final-board-banner" role="status">
+          <div><strong>체크메이트 · 마지막 판</strong><span>{shownGame.state.lastMove?.san ? `마지막 수 ${shownGame.state.lastMove.san}` : "최종 기물 배치"}</span></div>
+          <button type="button" onClick={() => setInspectedChessSeed(null)}>결과 다시 보기</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -86,7 +94,7 @@ const VICTORY_THEMES: Record<GameId, { kicker: string; icon: string }> = {
   "davinci-code": { kicker: "CODE CRACKED", icon: "#" },
 };
 
-function VictoryOverlay({ gameId, winners, message }: { gameId: GameId; winners: string[]; message: string }) {
+function VictoryOverlay({ gameId, winners, message, onInspectBoard }: { gameId: GameId; winners: string[]; message: string; onInspectBoard?: () => void }) {
   const title = winners.length ? `${winners.join(", ")} 승리!` : "무승부!";
   const theme = VICTORY_THEMES[gameId];
   return (
@@ -98,7 +106,8 @@ function VictoryOverlay({ gameId, winners, message }: { gameId: GameId; winners:
         <span className="eyebrow">{winners.length ? theme.kicker : "DRAW GAME"}</span>
         <h2>{title}</h2>
         <p>{message}</p>
-        <small>잠시 후 같은 방의 대기 화면으로 돌아갑니다.</small>
+        {onInspectBoard && <button className="victory-board-button" type="button" onClick={onInspectBoard}>♟ 마지막 판 보기</button>}
+        <small>{onInspectBoard ? "마지막 판을 확인한 뒤 같은 방으로 돌아갑니다." : "잠시 후 같은 방의 대기 화면으로 돌아갑니다."}</small>
       </div>
     </div>
   );

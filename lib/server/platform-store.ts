@@ -78,6 +78,7 @@ export type StateAuth = {
 type MutationResult<T> = { value: T; changed?: boolean };
 
 const FINISHED_RETURN_DELAY_MS = 3_600;
+const CHESS_FINISHED_RETURN_DELAY_MS = 12_000;
 const ONLINE_WINDOW_MS = 2 * 60_000;
 const HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 const MAINTENANCE_INTERVAL_MS = 15_000;
@@ -308,7 +309,8 @@ function runMaintenance(state: PlatformState, now = Date.now()) {
   let changed = false;
 
   for (const [roomId, session] of Object.entries(state.sessions)) {
-    if (session.state.phase !== "finished" || now - Date.parse(session.updatedAt) < FINISHED_RETURN_DELAY_MS) continue;
+    const returnDelay = session.state.gameId === "chess" ? CHESS_FINISHED_RETURN_DELAY_MS : FINISHED_RETURN_DELAY_MS;
+    if (session.state.phase !== "finished" || now - Date.parse(session.updatedAt) < returnDelay) continue;
     const room = state.rooms[roomId];
     delete state.sessions[roomId];
     if (room) {
