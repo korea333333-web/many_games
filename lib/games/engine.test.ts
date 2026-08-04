@@ -280,6 +280,37 @@ test("chess announces en passant and check as special events", () => {
   assert.deepEqual(game.state.lastMove.events, [{ type: "check", label: "체크!" }]);
 });
 
+test("chess promotes a pawn to any non-king, non-pawn piece and announces it", () => {
+  const promotions = [
+    ["q", "Q", "퀸"],
+    ["r", "R", "룩"],
+    ["b", "B", "비숍"],
+    ["n", "N", "나이트"],
+  ] as const;
+
+  for (const [promotion, symbol, name] of promotions) {
+    let game = createGame("chess", players.slice(0, 2), 17);
+    game.state.board = Array(64).fill(null);
+    game.state.board[4] = "bK";
+    game.state.board[8] = "wP";
+    game.state.board[60] = "wK";
+    delete game.state.fen;
+    game = reduceGame(game, { type: "MOVE", playerId: "a", payload: { from: 8, to: 0, promotion } });
+    assert.equal(game.state.board[0], `w${symbol}`);
+    assert.ok(game.state.lastMove.events.some((event: { type: string; label: string }) => event.type === "promotion" && event.label === `프로모션 to ${name}!`));
+  }
+
+  let invalid = createGame("chess", players.slice(0, 2), 18);
+  invalid.state.board = Array(64).fill(null);
+  invalid.state.board[4] = "bK";
+  invalid.state.board[8] = "wP";
+  invalid.state.board[60] = "wK";
+  delete invalid.state.fen;
+  invalid = reduceGame(invalid, { type: "MOVE", playerId: "a", payload: { from: 8, to: 0, promotion: "k" } });
+  assert.equal(invalid.state.board[8], "wP");
+  assert.match(invalid.message, /퀸, 룩, 비숍, 나이트/);
+});
+
 test("chess finishes on checkmate instead of capturing the king", () => {
   let game = createGame("chess", players.slice(0, 2), 14);
   const moves = [

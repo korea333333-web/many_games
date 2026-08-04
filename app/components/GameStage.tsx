@@ -143,12 +143,20 @@ const CHESS_PIECE_NAMES: Record<string, string> = {
   K: "킹", Q: "퀸", R: "룩", B: "비숍", N: "나이트", P: "폰",
 };
 
+const CHESS_PROMOTIONS = [
+  { value: "q", piece: "Q", name: "퀸" },
+  { value: "r", piece: "R", name: "룩" },
+  { value: "b", piece: "B", name: "비숍" },
+  { value: "n", piece: "N", name: "나이트" },
+] as const;
+
 function chessCoordinate(index: number) {
   return `${String.fromCharCode(97 + (index % 8))}${8 - Math.floor(index / 8)}`;
 }
 
 function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
   const [selection, setSelection] = useState<{ index: number; turn: number } | null>(null);
+  const [pendingPromotion, setPendingPromotion] = useState<{ from: number; to: number; turn: number } | null>(null);
   const board = game.state.board as Array<string | null>;
   const myTurn = game.players[game.turn]?.id === playerId;
   const viewerIndex = game.players.findIndex((item) => item.id === playerId);
@@ -158,8 +166,9 @@ function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
   const bottomPlayerIndex = blackView ? 1 : 0;
   const topPlayer = game.players[topPlayerIndex];
   const bottomPlayer = game.players[bottomPlayerIndex];
-  const lastMove = game.state.lastMove as { from: number; to: number; san?: string; events?: Array<{ type: "castle" | "en-passant" | "check"; label: string }> } | null;
+  const lastMove = game.state.lastMove as { from: number; to: number; san?: string; events?: Array<{ type: "castle" | "en-passant" | "promotion" | "check"; label: string }> } | null;
   const selected = selection?.turn === game.turn ? selection.index : null;
+  const promotionChoice = pendingPromotion?.turn === game.turn ? pendingPromotion : null;
   const displayIndexes = useMemo(() => getChessViewIndexes(game, playerId), [game, playerId]);
   const legalTargets = useMemo(() => selected === null ? [] : getChessLegalTargets(game, playerId, selected), [game, playerId, selected]);
   const click = (index: number) => {
@@ -170,11 +179,23 @@ function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
       return;
     }
     if (selected !== null && legalTargets.includes(index)) {
+      const selectedPiece = board[selected];
+      if (selectedPiece?.[1] === "P" && (index < 8 || index >= 56)) {
+        setPendingPromotion({ from: selected, to: index, turn: game.turn });
+        setSelection(null);
+        return;
+      }
       onAction({ type: "MOVE", payload: { from: selected, to: index } });
       setSelection(null);
       return;
     }
     setSelection(null);
+  };
+
+  const promote = (promotion: typeof CHESS_PROMOTIONS[number]["value"]) => {
+    if (!promotionChoice) return;
+    onAction({ type: "MOVE", payload: { from: promotionChoice.from, to: promotionChoice.to, promotion } });
+    setPendingPromotion(null);
   };
 
   const playerBar = (player: typeof topPlayer, playerIndex: number, position: "top" | "bottom") => {
@@ -198,6 +219,24 @@ function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
   return (
     <div className="chess-shell">
       {lastMove?.events && lastMove.events.length > 0 && <div className="chess-event-stack" aria-live="assertive">{lastMove.events.map((event, index) => <strong key={`${lastMove.from}-${lastMove.to}-${event.type}`} className={event.type} style={{ animationDelay: `${index * 0.34}s` }}>{event.label}</strong>)}</div>}
+      {promotionChoice && (
+        <div className="chess-promotion-picker" role="dialog" aria-modal="true" aria-labelledby="promotion-title">
+          <div className="chess-promotion-card">
+            <span className="eyebrow">PAWN PROMOTION</span>
+            <h3 id="promotion-title">프로모션할 기물을 골라주세요</h3>
+            <p>폰 대신 사용할 기물을 하나 선택하세요.</p>
+            <div>
+              {CHESS_PROMOTIONS.map((choice) => (
+                <button key={choice.value} type="button" onClick={() => promote(choice.value)} aria-label={`${choice.name}(으)로 프로모션`}>
+                  <span className={`chess-piece ${myColor === "w" ? "white" : "black"}`} aria-hidden="true">{PIECES[`${myColor}${choice.piece}`]}</span>
+                  <strong>{choice.name}</strong>
+                </button>
+              ))}
+            </div>
+            <button className="promotion-cancel" type="button" onClick={() => setPendingPromotion(null)}>취소</button>
+          </div>
+        </div>
+      )}
       {playerBar(topPlayer, topPlayerIndex, "top")}
       <div className="chess-board-frame">
         <div className="chess-board" role="group" aria-label={`${blackView ? "흑" : "백"} 시점 체스판`}>
@@ -241,7 +280,7 @@ function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
         <span>{status}</span>
         {lastMove?.san && <small>최근 수 {lastMove.san}</small>}
       </div>
-      <p className="chess-help">기물을 선택하면 이동 가능한 칸이 표시됩니다 · 체크메이트, 캐슬링, 앙파상 적용</p>
+      <p className="chess-help">기물을 선택하면 이동 가능한 칸이 표시됩니다 · 체크메이트, 캐슬링, 앙파상, 프로모션 적용</p>
     </div>
   );
 }

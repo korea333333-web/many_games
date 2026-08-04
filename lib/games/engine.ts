@@ -552,20 +552,33 @@ function reduceChess(game: GameEnvelope, command: GameCommand) {
   const piece = board[from];
   const color = game.turn === 0 ? "w" : "b";
   if (!piece || piece[0] !== color) return fail(game, "내 말을 선택하세요.");
+  const isPromotionMove = piece[1] === "P" && (to < 8 || to >= 56);
+  const requestedPromotion = String(command.payload?.promotion ?? "q").toLowerCase();
+  if (isPromotionMove && !["q", "r", "b", "n"].includes(requestedPromotion)) {
+    return fail(game, "퀸, 룩, 비숍, 나이트 중 하나로 프로모션하세요.");
+  }
   const chess = chessFromGame(game);
   let move;
   try {
-    move = chess.move({ from: chessSquare(from), to: chessSquare(to), promotion: "q" });
+    move = chess.move({
+      from: chessSquare(from),
+      to: chessSquare(to),
+      promotion: isPromotionMove ? requestedPromotion : undefined,
+    });
   } catch {
     return fail(game, "체스 규칙상 이동할 수 없는 칸입니다.");
   }
   game.state.board = chessBoard(chess);
   game.state.fen = chess.fen();
   game.state.inCheck = chess.inCheck();
-  const events: Array<{ type: "castle" | "en-passant" | "check"; label: string }> = [];
+  const events: Array<{ type: "castle" | "en-passant" | "promotion" | "check"; label: string }> = [];
   if (move.isKingsideCastle()) events.push({ type: "castle", label: "킹사이드 캐슬링!" });
   if (move.isQueensideCastle()) events.push({ type: "castle", label: "퀸사이드 캐슬링!" });
   if (move.isEnPassant()) events.push({ type: "en-passant", label: "앙파상!" });
+  if (move.isPromotion()) {
+    const promotionName = ({ q: "퀸", r: "룩", b: "비숍", n: "나이트" } as Record<string, string>)[move.promotion ?? "q"];
+    events.push({ type: "promotion", label: `프로모션 to ${promotionName}!` });
+  }
   if (chess.inCheck()) events.push({ type: "check", label: "체크!" });
   game.state.lastMove = { from, to, san: move.san, events };
   game.turn = chess.turn() === "w" ? 0 : 1;

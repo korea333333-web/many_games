@@ -255,7 +255,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .chess-event-stack strong.check { color: #fff1f2; border-color: #fb7185; background: rgba(92,18,38,.94); transform: rotate(-2deg); }
 .chess-event-stack strong.en-passant { color: #e0f2fe; border-color: #38bdf8; background: rgba(7,47,67,.94); }
 .chess-event-stack strong.castle { color: #fff7d6; border-color: #facc15; background: rgba(67,49,8,.94); }
+.chess-event-stack strong.promotion { color: #f3e8ff; border-color: #c084fc; background: rgba(73,28,105,.96); }
 @keyframes chess-callout { 0% { opacity: 0; transform: scale(1.8) rotate(-5deg); filter: blur(8px); } 18%, 64% { opacity: 1; transform: scale(1) rotate(0); filter: blur(0); } 100% { opacity: 0; transform: scale(.82) translateY(-24px); } }
+.chess-promotion-picker { position: absolute; inset: 0; z-index: 12; display: grid; place-items: center; padding: 18px; border-radius: 18px; background: rgba(8,10,15,.82); backdrop-filter: blur(5px); }
+.chess-promotion-card { width: min(500px, 100%); padding: 24px; border: 1px solid rgba(192,132,252,.5); border-radius: 22px; background: #20232d; box-shadow: 0 28px 70px rgba(0,0,0,.58), inset 0 1px rgba(255,255,255,.08); }
+.chess-promotion-card h3 { margin: 7px 0 4px; color: white; font-size: clamp(20px, 4vw, 28px); }
+.chess-promotion-card > p { margin: 0 0 18px; color: var(--muted); font-size: 12px; }
+.chess-promotion-card > div { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+.chess-promotion-card > div button { min-width: 0; display: grid; place-items: center; gap: 5px; padding: 12px 6px 9px; border: 1px solid #4b5265; border-radius: 15px; background: #2a2e39; color: white; }
+.chess-promotion-card > div button:hover, .chess-promotion-card > div button:focus-visible { border-color: #c084fc; background: #373044; transform: translateY(-2px); }
+.chess-promotion-card .chess-piece { font-size: clamp(38px, 8vw, 54px); }
+.chess-promotion-card strong { font-size: 11px; }
+.chess-promotion-card .promotion-cancel { margin-top: 14px; border: 0; background: transparent; color: #b8bdca; font-weight: 850; }
 .chess-player-bar { min-height: 58px; display: flex; align-items: center; gap: 11px; padding: 8px 12px; border: 1px solid #3b4150; background: #20232d; text-align: left; }
 .chess-player-bar.top { border-radius: 16px 16px 8px 8px; }
 .chess-player-bar.bottom { border-radius: 8px 8px 16px 16px; }
