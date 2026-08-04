@@ -2,16 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
+import type { RealtimeChannel, SupabaseClient, User } from "@supabase/supabase-js";
 import { GAME_BY_ID, GAME_CATALOG, type GameId, type GameInfo } from "@/lib/games/catalog";
 import type { GameCommand, GameEnvelope } from "@/lib/games/engine";
 import { hasUnreadMessage, latestMessageId } from "@/lib/chat/unread";
-import { getRealtimeClient } from "@/lib/supabase/realtime-client";
+import { getSupabaseBrowserClient } from "@/lib/supabase/realtime-client";
 import { GameStage } from "./GameStage";
 
 const GameRulebook = dynamic(() => import("./GameRulebook").then((module) => module.GameRulebook), { ssr: false });
 
 type Identity = { id: string; nickname: string };
+type AuthAccount = { email: string; avatarUrl: string | null };
 type RoomListItem = {
   id: string; title: string; gameId: GameId; hostId: string; hostName: string;
   status: "waiting" | "playing"; capacity: number; locked: boolean; memberCount: number; playerCount: number;
@@ -50,8 +51,50 @@ function newIdentity(): Identity {
   return { id, nickname: `플레이어${id.slice(-4)}` };
 }
 
+function readStoredIdentity(key: string) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "null") as Partial<Identity> | null;
+    if (value && typeof value.id === "string" && typeof value.nickname === "string") {
+      return { id: value.id, nickname: value.nickname };
+    }
+  } catch {
+    localStorage.removeItem(key);
+  }
+  return null;
+}
+
+function getGuestIdentity() {
+  const storedGuest = readStoredIdentity("game-lobby-guest-identity");
+  if (storedGuest) return storedGuest;
+  const legacyIdentity = readStoredIdentity("game-lobby-identity");
+  const guest = legacyIdentity && !legacyIdentity.id.startsWith("user_") ? legacyIdentity : newIdentity();
+  localStorage.setItem("game-lobby-guest-identity", JSON.stringify(guest));
+  return guest;
+}
+
+function identityFromUser(user: User) {
+  const id = `user_${user.id.replaceAll("-", "")}`;
+  const stored = readStoredIdentity("game-lobby-identity");
+  const metadataName = String(user.user_metadata.full_name ?? user.user_metadata.name ?? "").trim();
+  const emailName = user.email?.split("@")[0] ?? "플레이어";
+  return {
+    id,
+    nickname: stored?.id === id ? stored.nickname : (metadataName || emailName).slice(0, 14),
+  };
+}
+
+function accountFromUser(user: User): AuthAccount {
+  return {
+    email: user.email ?? "Google 계정",
+    avatarUrl: typeof user.user_metadata.avatar_url === "string" ? user.user_metadata.avatar_url : null,
+  };
+}
+
 export function GamePlatform() {
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [authAccount, setAuthAccount] = useState<AuthAccount | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY_SNAPSHOT);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [gameFilter, setGameFilter] = useState<GameId | "all">("all");
@@ -78,17 +121,43 @@ export function GamePlatform() {
   const realtimeRefreshTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    const stored = localStorage.getItem("game-lobby-identity");
-    const value = stored ? JSON.parse(stored) as Identity : newIdentity();
-    localStorage.setItem("game-lobby-identity", JSON.stringify(value));
-    const storedLastReadValue = localStorage.getItem(`game-lobby-chat-read:${value.id}`);
-    const storedLastRead = storedLastReadValue === null ? Number.NaN : Number(storedLastReadValue);
-    lastReadMessageIdRef.current = Number.isFinite(storedLastRead) && storedLastRead >= 0 ? storedLastRead : null;
-    const storedRoom = localStorage.getItem("game-lobby-active-room");
-    queueMicrotask(() => {
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    const applyUser = (user: User | null, token: string | null) => {
+      const value = user ? identityFromUser(user) : getGuestIdentity();
+      const previous = readStoredIdentity("game-lobby-identity");
+      localStorage.setItem("game-lobby-identity", JSON.stringify(value));
+      const storedLastReadValue = localStorage.getItem(`game-lobby-chat-read:${value.id}`);
+      const storedLastRead = storedLastReadValue === null ? Number.NaN : Number(storedLastReadValue);
+      lastReadMessageIdRef.current = Number.isFinite(storedLastRead) && storedLastRead >= 0 ? storedLastRead : null;
+      const storedRoom = previous?.id === value.id ? localStorage.getItem("game-lobby-active-room") : null;
+      if (!storedRoom) localStorage.removeItem("game-lobby-active-room");
       setIdentity(value);
-      if (storedRoom) setActiveRoomId(storedRoom);
+      setAuthAccount(user ? accountFromUser(user) : null);
+      setAccessToken(token);
+      setActiveRoomId(storedRoom);
+    };
+
+    void getSupabaseBrowserClient().then(async (client) => {
+      const { data, error } = await client.auth.getSession();
+      if (error) throw error;
+      if (cancelled) return;
+      applyUser(data.session?.user ?? null, data.session?.access_token ?? null);
+      const listener = client.auth.onAuthStateChange((_event, session) => {
+        if (!cancelled) applyUser(session?.user ?? null, session?.access_token ?? null);
+      });
+      unsubscribe = () => listener.data.subscription.unsubscribe();
+    }).catch((error) => {
+      if (cancelled) return;
+      applyUser(null, null);
+      setNotice(error instanceof Error ? `로그인 상태를 확인하지 못했습니다: ${error.message}` : "로그인 상태를 확인하지 못했습니다.");
     });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -124,14 +193,17 @@ export function GamePlatform() {
     const params = new URLSearchParams({ playerId: identity.id, nickname: identity.nickname });
     if (roomId) params.set("roomId", roomId);
     try {
-      const response = await fetch(`/api/sync?${params}`, { cache: "no-store" });
+      const response = await fetch(`/api/sync?${params}`, {
+        cache: "no-store",
+        headers: accessToken ? { authorization: `Bearer ${accessToken}` } : undefined,
+      });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "서버 연결 실패");
       applySnapshot(data as Snapshot, roomId);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "서버 연결 실패");
     }
-  }, [identity, activeRoomId, applySnapshot]);
+  }, [identity, activeRoomId, applySnapshot, accessToken]);
 
   const syncNow = useCallback(async () => {
     if (document.hidden || pollInFlight.current || pendingGameActions.current > 0) return;
@@ -151,7 +223,7 @@ export function GamePlatform() {
     let realtimeClient: SupabaseClient | null = null;
     let channels: RealtimeChannel[] = [];
 
-    void getRealtimeClient().then((client) => {
+    void getSupabaseBrowserClient().then((client) => {
       realtimeClient = client;
       if (cancelled) return;
       channels = topics.map((topic) => client
@@ -212,7 +284,10 @@ export function GamePlatform() {
     try {
       const response = await fetch("/api/sync", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({ type, playerId: identity.id, nickname: identity.nickname, roomId: activeRoomId, payload }),
       });
       const data = await response.json();
@@ -241,7 +316,7 @@ export function GamePlatform() {
         if (pendingGameActions.current === 0) setGameSyncing(false);
       }
     }
-  }, [identity, activeRoomId, applySnapshot, refresh]);
+  }, [identity, activeRoomId, applySnapshot, refresh, accessToken]);
 
   const rooms = useMemo(() => snapshot.rooms.filter((room) => {
     if (gameFilter !== "all" && room.gameId !== gameFilter) return false;
@@ -273,7 +348,10 @@ export function GamePlatform() {
     try {
       const response = await fetch("/api/sync", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({ type: "setNickname", playerId: next.id, nickname: next.nickname, roomId: activeRoomId, payload: {} }),
       });
       const data = await response.json();
@@ -287,6 +365,40 @@ export function GamePlatform() {
       setNotice(error instanceof Error ? error.message : "닉네임 변경 실패");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    setAuthBusy(true);
+    setNotice("");
+    try {
+      const client = await getSupabaseBrowserClient();
+      const { error } = await client.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin,
+          queryParams: { prompt: "select_account" },
+        },
+      });
+      if (error) throw error;
+    } catch (error) {
+      setAuthBusy(false);
+      setNotice(error instanceof Error ? error.message : "Google 로그인을 시작하지 못했습니다.");
+    }
+  };
+
+  const signOut = async () => {
+    setAuthBusy(true);
+    setNotice("");
+    try {
+      const client = await getSupabaseBrowserClient();
+      const { error } = await client.auth.signOut();
+      if (error) throw error;
+      setNicknameOpen(false);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "로그아웃하지 못했습니다.");
+    } finally {
+      setAuthBusy(false);
     }
   };
 
@@ -348,7 +460,7 @@ export function GamePlatform() {
           <div className="top-actions">
             <button className="rulebook-trigger" onClick={() => { setRulebookGameId(gameFilter === "all" ? "gomoku" : gameFilter); setRulebookOpen(true); }}><span aria-hidden="true">▥</span><strong>게임 사전</strong></button>
             <button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={openChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button>
-            <button className="profile-button" onClick={() => setNicknameOpen(true)}><span>{identity.nickname[0]}</span><strong>{identity.nickname}</strong></button>
+            <button className="profile-button" onClick={() => setNicknameOpen(true)} aria-label="내 프로필 열기"><ProfileAvatar nickname={identity.nickname} avatarUrl={authAccount?.avatarUrl} /><strong>{identity.nickname}</strong></button>
             <button className="primary-button create-button" onClick={() => setCreateOpen(true)}>＋ 방 만들기</button>
           </div>
         </header>
@@ -374,7 +486,7 @@ export function GamePlatform() {
       <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
       <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
       {createOpen && <CreateRoomModal loading={loading} onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) setCreateOpen(false); }} />}
-      {nicknameOpen && <NicknameModal initialValue={identity.nickname} loading={loading} onClose={() => setNicknameOpen(false)} onSave={saveNickname} />}
+      {nicknameOpen && <ProfileModal identity={identity} account={authAccount} loading={loading} authBusy={authBusy} onClose={() => setNicknameOpen(false)} onSave={saveNickname} onGoogleSignIn={signInWithGoogle} onSignOut={signOut} />}
       {joinTarget && <PasswordModal roomTitle={joinTarget.title} loading={loading} onClose={() => setJoinTarget(null)} onSubmit={(password) => enterRoom(joinTarget, password)} />}
       {notice && <Toast message={notice} onClose={() => setNotice("")} />}
       {loading && <ActionLoading label={loadingLabel} />}
@@ -382,17 +494,28 @@ export function GamePlatform() {
   );
 }
 
-function NicknameModal({ initialValue, loading, onClose, onSave }: {
-  initialValue: string; loading: boolean; onClose: () => void; onSave: (nickname: string) => void;
+function ProfileAvatar({ nickname, avatarUrl }: { nickname: string; avatarUrl?: string | null }) {
+  return <span className={avatarUrl ? "profile-avatar has-image" : "profile-avatar"} style={avatarUrl ? { backgroundImage: `url(${JSON.stringify(avatarUrl)})` } : undefined}>{avatarUrl ? "" : nickname[0]}</span>;
+}
+
+function ProfileModal({ identity, account, loading, authBusy, onClose, onSave, onGoogleSignIn, onSignOut }: {
+  identity: Identity; account: AuthAccount | null; loading: boolean; authBusy: boolean; onClose: () => void;
+  onSave: (nickname: string) => void; onGoogleSignIn: () => void; onSignOut: () => void;
 }) {
-  const [nickname, setNickname] = useState(initialValue);
+  const [nickname, setNickname] = useState(identity.nickname);
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <form className="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="nickname-title" onSubmit={(event) => { event.preventDefault(); if (nickname.trim()) onSave(nickname); }}>
-        <div className="modal-head"><div><span className="eyebrow">내 프로필</span><h2 id="nickname-title">닉네임 변경</h2></div><button type="button" onClick={onClose} aria-label="닫기">×</button></div>
+        <div className="modal-head"><div><span className="eyebrow">내 프로필</span><h2 id="nickname-title">프로필 설정</h2></div><button type="button" onClick={onClose} aria-label="닫기">×</button></div>
+        <div className="profile-account-card">
+          <ProfileAvatar nickname={identity.nickname} avatarUrl={account?.avatarUrl} />
+          <div><strong>{identity.nickname}</strong><small>{account?.email ?? "게스트로 접속 중"}</small></div>
+          <span className={account ? "account-badge connected" : "account-badge"}>{account ? "Google 연결됨" : "임시 계정"}</span>
+        </div>
+        {!account && <button type="button" className="google-login-button" onClick={onGoogleSignIn} disabled={authBusy}><b aria-hidden="true">G</b>{authBusy ? "Google로 이동 중…" : "Google로 로그인"}</button>}
         <label>새 닉네임<input autoFocus value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={14} placeholder="닉네임 입력" /></label>
         <p className="modal-note">최대 14글자까지 사용할 수 있어요.</p>
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>취소</button><button className="primary-button" disabled={loading || !nickname.trim()}>저장</button></div>
+        <div className="modal-actions profile-actions">{account && <button type="button" className="text-button danger" onClick={onSignOut} disabled={authBusy}>로그아웃</button>}<span /><button type="button" className="secondary-button" onClick={onClose}>취소</button><button className="primary-button" disabled={loading || authBusy || !nickname.trim()}>저장</button></div>
       </form>
     </div>
   );

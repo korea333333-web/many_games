@@ -1,4 +1,5 @@
 import { executeCommand, getSnapshot } from "@/lib/server/platform-store";
+import { AuthenticationError, resolvePlayerId } from "@/lib/server/supabase-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -9,20 +10,27 @@ function stateAuth(request: Request) {
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    const playerId = url.searchParams.get("playerId");
+    const playerId = await resolvePlayerId(request, url.searchParams.get("playerId"));
     const nickname = url.searchParams.get("nickname");
     const roomId = url.searchParams.get("roomId");
     return Response.json(await getSnapshot(playerId, roomId, nickname, stateAuth(request)));
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "서버 오류" }, { status: 500 });
+    return Response.json(
+      { error: error instanceof Error ? error.message : "서버 오류" },
+      { status: error instanceof AuthenticationError ? 401 : 500 },
+    );
   }
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
+    body.playerId = await resolvePlayerId(request, body.playerId);
     return Response.json(await executeCommand(body, stateAuth(request)));
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "서버 오류" }, { status: 400 });
+    return Response.json(
+      { error: error instanceof Error ? error.message : "서버 오류" },
+      { status: error instanceof AuthenticationError ? 401 : 400 },
+    );
   }
 }

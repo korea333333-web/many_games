@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 let clientPromise: Promise<SupabaseClient> | null = null;
 
-export function getRealtimeClient() {
+export function getSupabaseBrowserClient() {
   if (!clientPromise) {
     const configPromise = fetch("/api/realtime-config")
       .then(async (response) => {
@@ -12,7 +12,7 @@ export function getRealtimeClient() {
       });
     clientPromise = Promise.all([configPromise, import("@supabase/supabase-js")])
       .then(([config, { createClient }]) => createClient(config.url, config.key, {
-          auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+          auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
           realtime: { params: { eventsPerSecond: 10 } },
         }))
       .catch((error) => {
@@ -22,3 +22,5 @@ export function getRealtimeClient() {
   }
   return clientPromise;
 }
+
+export const getRealtimeClient = getSupabaseBrowserClient;

@@ -54,7 +54,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .chat-unread-dot { position: absolute; top: -6px; right: -6px; z-index: 2; width: 17px; height: 17px; border: 3px solid #1c1f28; border-radius: 50%; background: #ff304f; box-shadow: 0 0 0 4px rgba(255,48,79,.18), 0 0 18px rgba(255,48,79,.75); animation: unread-pulse .82s ease-in-out infinite alternate; }
 .chat-unread-dot::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: white; opacity: .72; }
 .profile-button { height: 44px; display: flex; align-items: center; gap: 8px; max-width: 160px; padding: 4px 11px 4px 5px; border: 0; border-radius: 999px; background: var(--panel-2); color: white; }
-.profile-button span { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--blue); font-weight: 900; }
+.profile-avatar { width: 34px; height: 34px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--blue); background-position: center; background-size: cover; font-weight: 900; }
+.profile-avatar.has-image { box-shadow: inset 0 0 0 2px rgba(255,255,255,.32); }
 .profile-button strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .primary-button, .secondary-button, .join-button, .watch-button { min-height: 44px; border-radius: 14px; border: 0; padding: 0 19px; font-weight: 900; white-space: nowrap; transition: transform .16s ease, box-shadow .16s ease; }
 .primary-button, .join-button { background: var(--blue); color: white; box-shadow: 0 8px 18px rgba(37,99,235,.28); }
@@ -136,6 +137,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .selected-game p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
 .modal-note { padding: 11px 13px; border-radius: 12px; background: rgba(163,230,53,.09); color: #d9edb8; font-size: 12px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.profile-account-card { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; align-items: center; gap: 11px; margin-bottom: 14px; padding: 13px; border: 1px solid rgba(180,197,255,.15); border-radius: 17px; background: #292c36; }
+.profile-account-card .profile-avatar { width: 46px; height: 46px; }
+.profile-account-card div { min-width: 0; }
+.profile-account-card strong, .profile-account-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-account-card small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.account-badge { border-radius: 999px; padding: 5px 8px; background: #3b3f4c; color: #c3c7d6; font-size: 9px; font-weight: 900; }
+.account-badge.connected { background: rgba(163,230,53,.13); color: #d8f7a5; }
+.google-login-button { width: 100%; height: 48px; display: flex; align-items: center; justify-content: center; gap: 10px; border: 1px solid #555c70; border-radius: 14px; background: #f8fafc; color: #202124; font-weight: 850; }
+.google-login-button b { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 50%; color: #4285f4; font: 950 18px/1 Arial, sans-serif; }
+.profile-actions { align-items: center; }
+.profile-actions > span { flex: 1; }
+.text-button { min-height: 40px; border: 0; background: transparent; color: var(--muted); font-weight: 800; }
+.text-button.danger { color: #fda4af; }
 .toast { position: fixed; left: 50%; bottom: 24px; z-index: 80; min-height: 46px; max-width: min(560px, 90vw); transform: translateX(-50%); border: 1px solid #5f6579; border-radius: 14px; padding: 0 12px 0 16px; background: #282c36; color: white; box-shadow: var(--shadow); }
 .toast span { margin-left: 13px; color: var(--muted); }
 .action-loading { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 20px; background: rgba(8,11,19,.42); backdrop-filter: blur(3px); opacity: 0; animation: action-loading-in .18s .1s ease forwards; }
@@ -520,7 +534,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .topbar-title { flex: 1; display: block; }
   .topbar h1 { margin-top: 2px; font-size: 24px; color: white; }
   .topbar-title .online-pill { display: flex; height: auto; padding: 3px 0 0; background: transparent; color: var(--muted); font-size: 11px; }
-  .search-box, .profile-button, .create-button { display: none; }
+  .search-box, .create-button { display: none; }
+  .profile-button { width: 42px; padding: 4px; }
   .top-actions { margin-left: auto; }
   .top-actions .rulebook-trigger { width: 42px; padding: 0; }
   .top-actions .rulebook-trigger strong { display: none; }
