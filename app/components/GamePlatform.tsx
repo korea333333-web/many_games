@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { GAME_BY_ID, GAME_CATALOG, type GameId, type GameInfo } from "@/lib/games/catalog";
 import type { GameCommand, GameEnvelope } from "@/lib/games/engine";
 import { hasUnreadMessage, latestMessageId } from "@/lib/chat/unread";
 import { GameStage } from "./GameStage";
+
+const GameRulebook = dynamic(() => import("./GameRulebook").then((module) => module.GameRulebook), { ssr: false });
 
 type Identity = { id: string; nickname: string };
 type RoomListItem = {
@@ -58,8 +61,12 @@ export function GamePlatform() {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("잠시만 기다려 주세요");
+  const [gameSyncing, setGameSyncing] = useState(false);
+  const [rulebookOpen, setRulebookOpen] = useState(false);
+  const [rulebookGameId, setRulebookGameId] = useState<GameId>("gomoku");
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const pollInFlight = useRef(false);
+  const pendingGameActions = useRef(0);
   const snapshotRef = useRef<Snapshot>(EMPTY_SNAPSHOT);
   const latestMessageIdRef = useRef<number | null>(null);
   const chatOpenRef = useRef(false);
@@ -126,8 +133,15 @@ export function GamePlatform() {
 
   const command = useCallback(async (type: string, payload: Record<string, unknown> = {}) => {
     if (!identity) return null;
-    setLoading(true);
-    setLoadingLabel(ACTION_LOADING_LABELS[type] ?? "요청을 처리하고 있어요");
+    const blocksScreen = type !== "gameAction" && type !== "sendGlobal" && type !== "sendDirect";
+    if (blocksScreen) {
+      setLoading(true);
+      setLoadingLabel(ACTION_LOADING_LABELS[type] ?? "요청을 처리하고 있어요");
+    }
+    if (type === "gameAction") {
+      pendingGameActions.current += 1;
+      setGameSyncing(true);
+    }
     setNotice("");
     try {
       const response = await fetch("/api/sync", {
@@ -155,7 +169,11 @@ export function GamePlatform() {
       setNotice(error instanceof Error ? error.message : "요청 실패");
       return null;
     } finally {
-      setLoading(false);
+      if (blocksScreen) setLoading(false);
+      if (type === "gameAction") {
+        pendingGameActions.current = Math.max(0, pendingGameActions.current - 1);
+        if (pendingGameActions.current === 0) setGameSyncing(false);
+      }
     }
   }, [identity, activeRoomId, applySnapshot, refresh]);
 
@@ -225,13 +243,16 @@ export function GamePlatform() {
           room={snapshot.activeRoom}
           identity={identity}
           loading={loading}
+          syncing={gameSyncing}
           onLeave={() => command("leaveRoom", { roomId: activeRoomId })}
           onStart={() => command("startGame", { roomId: activeRoomId })}
           onAction={(gameCommand) => command("gameAction", { roomId: activeRoomId, command: gameCommand })}
           onChat={openChat}
+          onRules={() => { setRulebookGameId(snapshot.activeRoom!.gameId); setRulebookOpen(true); }}
           hasUnreadChat={hasUnreadChat}
         />
         <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
+        <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
         {notice && <Toast message={notice} onClose={() => setNotice("")} />}
         {loading && <ActionLoading label={loadingLabel} />}
       </>
@@ -257,6 +278,7 @@ export function GamePlatform() {
           <div className="topbar-title"><h1>게임 로비</h1><span className="online-pill"><i />현재 {snapshot.onlinePlayers.length || 1}명 접속 중</span></div>
           <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="방 이름 또는 게임 검색" /></label>
           <div className="top-actions">
+            <button className="rulebook-trigger" onClick={() => { setRulebookGameId(gameFilter === "all" ? "gomoku" : gameFilter); setRulebookOpen(true); }}><span aria-hidden="true">▥</span><strong>게임 사전</strong></button>
             <button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={openChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button>
             <button className="profile-button" onClick={() => setNicknameOpen(true)}><span>{identity.nickname[0]}</span><strong>{identity.nickname}</strong></button>
             <button className="primary-button create-button" onClick={() => setCreateOpen(true)}>＋ 방 만들기</button>
@@ -282,6 +304,7 @@ export function GamePlatform() {
 
       <button className="mobile-create" onClick={() => setCreateOpen(true)} aria-label="방 만들기">＋</button>
       <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
+      <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
       {createOpen && <CreateRoomModal loading={loading} onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) setCreateOpen(false); }} />}
       {nicknameOpen && <NicknameModal initialValue={identity.nickname} loading={loading} onClose={() => setNicknameOpen(false)} onSave={saveNickname} />}
       {joinTarget && <PasswordModal roomTitle={joinTarget.title} loading={loading} onClose={() => setJoinTarget(null)} onSubmit={(password) => enterRoom(joinTarget, password)} />}
@@ -361,9 +384,9 @@ function CreateRoomModal({ loading, onClose, onCreate }: { loading: boolean; onC
   );
 }
 
-function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat, hasUnreadChat }: {
-  room: ActiveRoom; identity: Identity; loading: boolean; onLeave: () => void; onStart: () => void;
-  onAction: (command: Omit<GameCommand, "playerId">) => void; onChat: () => void; hasUnreadChat: boolean;
+function RoomView({ room, identity, loading, syncing, onLeave, onStart, onAction, onChat, onRules, hasUnreadChat }: {
+  room: ActiveRoom; identity: Identity; loading: boolean; syncing: boolean; onLeave: () => void; onStart: () => void;
+  onAction: (command: Omit<GameCommand, "playerId">) => Promise<unknown>; onChat: () => void; onRules: () => void; hasUnreadChat: boolean;
 }) {
   const gameInfo = GAME_BY_ID[room.gameId];
   const isHost = room.hostId === identity.id;
@@ -372,7 +395,7 @@ function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat,
       <header className="room-topbar">
         <button className="back-button" onClick={onLeave}>← 로비</button>
         <div><span className="eyebrow">{gameInfo.name}</span><h1>{room.title}</h1></div>
-        <div className="room-top-actions"><span>{room.members.length}/10명</span><button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={onChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button></div>
+        <div className="room-top-actions"><span>{room.members.length}/10명</span><span className={syncing ? "room-sync active" : "room-sync"} aria-live="polite"><i />{syncing ? "저장 중" : "연결됨"}</span><button className="rulebook-trigger compact" onClick={onRules} aria-label={`${gameInfo.name} 규칙 보기`}><span aria-hidden="true">▥</span></button><button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={onChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button></div>
       </header>
       <main className="room-layout">
         <aside className="member-panel">
@@ -382,7 +405,7 @@ function RoomView({ room, identity, loading, onLeave, onStart, onAction, onChat,
           {!room.game && !isHost && <p className="waiting-copy">방장이 게임을 준비하고 있어요.</p>}
         </aside>
         <section className="game-panel">
-          {room.game ? <GameStage game={room.game} playerId={identity.id} viewerRole={room.viewerRole} onAction={onAction} /> : <div className="game-waiting"><div className="big-game-icon" style={{ background: gameInfo.accent }}>{gameInfo.icon}</div><span className="eyebrow">{playerCountLabel(gameInfo)}{room.settings.rounds ? ` · ${room.settings.rounds}라운드` : ""}</span><h2>{gameInfo.name}</h2><p>{gameInfo.description}</p></div>}
+          {room.game ? <GameStage game={room.game} revision={room.revision} playerId={identity.id} viewerRole={room.viewerRole} onAction={onAction} /> : <div className="game-waiting"><div className="big-game-icon" style={{ background: gameInfo.accent }}>{gameInfo.icon}</div><span className="eyebrow">{playerCountLabel(gameInfo)}{room.settings.rounds ? ` · ${room.settings.rounds}라운드` : ""}</span><h2>{gameInfo.name}</h2><p>{gameInfo.description}</p><button className="waiting-rules" onClick={onRules}>▥ 규칙 먼저 보기</button></div>}
         </section>
       </main>
     </div>

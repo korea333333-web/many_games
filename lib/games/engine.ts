@@ -559,8 +559,13 @@ function reduceChess(game: GameEnvelope, command: GameCommand) {
   }
   game.state.board = chessBoard(chess);
   game.state.fen = chess.fen();
-  game.state.lastMove = { from, to, san: move.san };
   game.state.inCheck = chess.inCheck();
+  const events: Array<{ type: "castle" | "en-passant" | "check"; label: string }> = [];
+  if (move.isKingsideCastle()) events.push({ type: "castle", label: "킹사이드 캐슬링!" });
+  if (move.isQueensideCastle()) events.push({ type: "castle", label: "퀸사이드 캐슬링!" });
+  if (move.isEnPassant()) events.push({ type: "en-passant", label: "앙파상!" });
+  if (chess.inCheck()) events.push({ type: "check", label: "체크!" });
+  game.state.lastMove = { from, to, san: move.san, events };
   game.turn = chess.turn() === "w" ? 0 : 1;
   if (chess.isCheckmate()) return finish(game, [command.playerId], `${game.players.find((player) => player.id === command.playerId)?.name} 체크메이트!`);
   if (chess.isDraw()) return finish(game, [], chess.isStalemate() ? "스테일메이트 · 무승부" : "무승부로 게임이 끝났습니다.");

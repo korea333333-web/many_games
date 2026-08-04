@@ -256,6 +256,28 @@ test("chess supports kingside castling", () => {
   assert.equal(game.state.board[62], "wK");
   assert.equal(game.state.board[61], "wR");
   assert.equal(game.state.lastMove.san, "O-O");
+  assert.deepEqual(game.state.lastMove.events, [{ type: "castle", label: "킹사이드 캐슬링!" }]);
+});
+
+test("chess announces en passant and check as special events", () => {
+  let game = createGame("chess", players.slice(0, 2), 15);
+  const enPassantMoves = [
+    ["a", 52, 36], ["b", 8, 16],
+    ["a", 36, 28], ["b", 11, 27],
+    ["a", 28, 19],
+  ] as const;
+  for (const [playerId, from, to] of enPassantMoves) {
+    game = reduceGame(game, { type: "MOVE", playerId, payload: { from, to } });
+  }
+  assert.equal(game.state.board[19], "wP");
+  assert.equal(game.state.board[27], null);
+  assert.deepEqual(game.state.lastMove.events, [{ type: "en-passant", label: "앙파상!" }]);
+
+  game = createGame("chess", players.slice(0, 2), 16);
+  game = reduceGame(game, { type: "MOVE", playerId: "a", payload: { from: 52, to: 36 } });
+  game = reduceGame(game, { type: "MOVE", playerId: "b", payload: { from: 13, to: 21 } });
+  game = reduceGame(game, { type: "MOVE", playerId: "a", payload: { from: 59, to: 31 } });
+  assert.deepEqual(game.state.lastMove.events, [{ type: "check", label: "체크!" }]);
 });
 
 test("chess finishes on checkmate instead of capturing the king", () => {

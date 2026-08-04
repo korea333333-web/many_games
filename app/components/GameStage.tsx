@@ -2,44 +2,58 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { getChessLegalTargets, getChessViewIndexes, type DavinciTile, type GameCommand, type GameEnvelope, type UnoCard, type UnoColor } from "@/lib/games/engine";
-import { GAME_BY_ID } from "@/lib/games/catalog";
+import { getChessLegalTargets, getChessViewIndexes, reduceGame, type DavinciTile, type GameCommand, type GameEnvelope, type UnoCard, type UnoColor } from "@/lib/games/engine";
+import { GAME_BY_ID, type GameId } from "@/lib/games/catalog";
 
 type Props = {
   game: GameEnvelope;
+  revision: number;
   playerId: string;
   viewerRole: string;
-  onAction: (command: Omit<GameCommand, "playerId">) => void;
+  onAction: (command: Omit<GameCommand, "playerId">) => Promise<unknown>;
 };
 
 type GameViewProps = Pick<Props, "game" | "playerId" | "onAction"> & { disabled: boolean };
 
-export function GameStage({ game, playerId, viewerRole, onAction }: Props) {
-  const info = GAME_BY_ID[game.gameId];
-  const player = game.players.find((item) => item.id === playerId);
+const INSTANT_GAMES = new Set<GameId>(["gomoku", "connect-four", "chess"]);
+
+export function GameStage({ game, revision, playerId, viewerRole, onAction }: Props) {
+  const [optimistic, setOptimistic] = useState<{ revision: number; game: GameEnvelope } | null>(null);
+  const shownGame = optimistic?.revision === revision ? optimistic.game : game;
+  const info = GAME_BY_ID[shownGame.gameId];
+  const player = shownGame.players.find((item) => item.id === playerId);
   const spectator = viewerRole === "spectator" || !player;
-  const winners = game.players.filter((item) => game.winnerIds.includes(item.id));
+  const winners = shownGame.players.filter((item) => shownGame.winnerIds.includes(item.id));
+  const runAction = (command: Omit<GameCommand, "playerId">) => {
+    if (INSTANT_GAMES.has(shownGame.gameId) && shownGame.phase === "playing" && !spectator) {
+      const now = Date.now();
+      setOptimistic({ revision, game: reduceGame(shownGame, { ...command, playerId, now }) });
+    }
+    const result = onAction(command);
+    void result.then((value) => { if (!value) setOptimistic(null); });
+    return result;
+  };
   return (
     <div className="game-stage">
       <div className="stage-header">
-        <div><span className="eyebrow">{info.name} · {spectator ? "관전 중" : game.state.maxRounds ? `${game.round}/${game.state.maxRounds}라운드` : `${game.round}라운드`}</span><h2>{game.message}</h2></div>
-        <div className="score-strip">{game.players.map((item, index) => <div key={item.id} className={item.id === playerId ? "current" : ""}><i style={{ background: playerColor(index) }} /> <span>{item.name}</span><b>{item.score}</b></div>)}</div>
+        <div><span className="eyebrow">{info.name} · {spectator ? "관전 중" : shownGame.state.maxRounds ? `${shownGame.round}/${shownGame.state.maxRounds}라운드` : `${shownGame.round}라운드`}</span><h2>{shownGame.message}</h2></div>
+        <div className="score-strip">{shownGame.players.map((item, index) => <div key={item.id} className={item.id === playerId ? "current" : ""}><i style={{ background: playerColor(index) }} /> <span>{item.name}</span><b>{item.score}</b></div>)}</div>
       </div>
       <div className="stage-body">
-        {game.gameId === "gomoku" && <Gomoku game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "connect-four" && <ConnectFour game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "chess" && <Chess game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "word-chain" && <WordChain game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "drawing" && <Drawing game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "chosung" && <Chosung game={game} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "same-answer" && <SameAnswer game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "liar" && <Liar game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "uno" && <Uno game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "yut" && <Yut game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
-        {game.gameId === "davinci-code" && <DavinciCode game={game} playerId={playerId} disabled={spectator} onAction={onAction} />}
+        {shownGame.gameId === "gomoku" && <Gomoku game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "connect-four" && <ConnectFour game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "chess" && <Chess game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "word-chain" && <WordChain game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "drawing" && <Drawing game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "chosung" && <Chosung game={shownGame} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "same-answer" && <SameAnswer game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "liar" && <Liar game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "uno" && <Uno game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "yut" && <Yut game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "davinci-code" && <DavinciCode game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
       </div>
-      {game.feedback && <AnswerFeedback game={game} playerId={playerId} />}
-      {game.phase === "finished" && <VictoryOverlay winners={winners.map((item) => item.name)} />}
+      {shownGame.feedback && <AnswerFeedback game={shownGame} playerId={playerId} />}
+      {shownGame.phase === "finished" && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} />}
     </div>
   );
 }
@@ -58,19 +72,50 @@ function AnswerFeedback({ game, playerId }: Pick<Props, "game" | "playerId">) {
   );
 }
 
-function VictoryOverlay({ winners }: { winners: string[] }) {
+const VICTORY_THEMES: Record<GameId, { kicker: string; icon: string }> = {
+  gomoku: { kicker: "FIVE IN A ROW", icon: "●" },
+  "connect-four": { kicker: "FOUR CONNECTED", icon: "●" },
+  chess: { kicker: "CHECKMATE", icon: "♚" },
+  "word-chain": { kicker: "LAST WORD", icon: "끝" },
+  drawing: { kicker: "MASTERPIECE", icon: "✎" },
+  chosung: { kicker: "QUIZ CHAMPION", icon: "ㅊ" },
+  "same-answer": { kicker: "ONE OF A KIND", icon: "1" },
+  liar: { kicker: "IDENTITY REVEALED", icon: "?" },
+  uno: { kicker: "UNO!", icon: "U" },
+  yut: { kicker: "ALL PIECES HOME", icon: "윷" },
+  "davinci-code": { kicker: "CODE CRACKED", icon: "#" },
+};
+
+function VictoryOverlay({ gameId, winners, message }: { gameId: GameId; winners: string[]; message: string }) {
   const title = winners.length ? `${winners.join(", ")} 승리!` : "무승부!";
+  const theme = VICTORY_THEMES[gameId];
   return (
-    <div className="victory-overlay" role="status" aria-live="assertive">
-      <div className="victory-confetti" aria-hidden="true">{Array.from({ length: 14 }, (_, index) => <i key={index} />)}</div>
-      <div className="victory-card">
-        <span className="victory-trophy" aria-hidden="true">{winners.length ? "★" : "◆"}</span>
-        <span className="eyebrow">GAME FINISHED</span>
+    <div className={`victory-overlay victory-${gameId}`} role="status" aria-live="assertive">
+      <div className="victory-particles" aria-hidden="true">{Array.from({ length: 16 }, (_, index) => <i key={index} />)}</div>
+      <div className={`victory-card theme-${gameId}`}>
+        <VictoryScene gameId={gameId} />
+        <span className="victory-trophy" aria-hidden="true">{winners.length ? theme.icon : "◆"}</span>
+        <span className="eyebrow">{winners.length ? theme.kicker : "DRAW GAME"}</span>
         <h2>{title}</h2>
-        <p>잠시 후 같은 방의 대기 화면으로 돌아갑니다.</p>
+        <p>{message}</p>
+        <small>잠시 후 같은 방의 대기 화면으로 돌아갑니다.</small>
       </div>
     </div>
   );
+}
+
+function VictoryScene({ gameId }: { gameId: GameId }) {
+  if (gameId === "gomoku") return <div className="victory-scene stones" aria-hidden="true">{Array.from({ length: 5 }, (_, index) => <i key={index} />)}</div>;
+  if (gameId === "connect-four") return <div className="victory-scene discs" aria-hidden="true">{Array.from({ length: 4 }, (_, index) => <i key={index} />)}</div>;
+  if (gameId === "chess") return <div className="victory-scene chess-mate" aria-hidden="true"><i>♔</i><b>CHECKMATE</b><i>♚</i></div>;
+  if (gameId === "word-chain") return <div className="victory-scene word-ribbon" aria-hidden="true"><i>끝</i><i>말</i><i>잇</i><i>기</i></div>;
+  if (gameId === "drawing") return <div className="victory-scene paint" aria-hidden="true"><i /><i /><i /><b>✎</b></div>;
+  if (gameId === "chosung") return <div className="victory-scene consonants" aria-hidden="true"><i>ㅊ</i><i>ㅅ</i><i>ㅋ</i><i>ㅈ</i></div>;
+  if (gameId === "same-answer") return <div className="victory-scene unique-answer" aria-hidden="true"><i>A</i><i>A</i><b>C</b><i>B</i><i>B</i></div>;
+  if (gameId === "liar") return <div className="victory-scene mask" aria-hidden="true"><i>◐</i><b>?</b><i>◑</i></div>;
+  if (gameId === "uno") return <div className="victory-scene card-fan" aria-hidden="true"><i>7</i><i>↻</i><i>+4</i><i>W</i></div>;
+  if (gameId === "yut") return <div className="victory-scene yut-sticks-win" aria-hidden="true"><i /><i /><i /><i /></div>;
+  return <div className="victory-scene code-tiles" aria-hidden="true"><i>2</i><i>4</i><b>?</b><i>9</i></div>;
 }
 
 function playerColor(index: number) {
@@ -113,7 +158,7 @@ function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
   const bottomPlayerIndex = blackView ? 1 : 0;
   const topPlayer = game.players[topPlayerIndex];
   const bottomPlayer = game.players[bottomPlayerIndex];
-  const lastMove = game.state.lastMove as { from: number; to: number; san?: string } | null;
+  const lastMove = game.state.lastMove as { from: number; to: number; san?: string; events?: Array<{ type: "castle" | "en-passant" | "check"; label: string }> } | null;
   const selected = selection?.turn === game.turn ? selection.index : null;
   const displayIndexes = useMemo(() => getChessViewIndexes(game, playerId), [game, playerId]);
   const legalTargets = useMemo(() => selected === null ? [] : getChessLegalTargets(game, playerId, selected), [game, playerId, selected]);
@@ -152,6 +197,7 @@ function Chess({ game, playerId, disabled, onAction }: GameViewProps) {
 
   return (
     <div className="chess-shell">
+      {lastMove?.events && lastMove.events.length > 0 && <div className="chess-event-stack" aria-live="assertive">{lastMove.events.map((event, index) => <strong key={`${lastMove.from}-${lastMove.to}-${event.type}`} className={event.type} style={{ animationDelay: `${index * 0.34}s` }}>{event.label}</strong>)}</div>}
       {playerBar(topPlayer, topPlayerIndex, "top")}
       <div className="chess-board-frame">
         <div className="chess-board" role="group" aria-label={`${blackView ? "흑" : "백"} 시점 체스판`}>
