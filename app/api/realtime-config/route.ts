@@ -1,6 +1,6 @@
-const DEFAULT_SUPABASE_URL = "https://stusvfgazqxieybufdlc.supabase.co";
+const DEFAULT_SUPABASE_URL = "https://uhvjxyenxqqgyjwihhlc.supabase.co";
 // Publishable keys identify the project in browser clients; RLS and the protected API enforce data access.
-const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Qdumvzg4LKRakWqNRD-W2A_KaAhAoTF";
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hcZh8ZTVeqnyBQVphaspnQ_AIx1_5lX";
 
 export const dynamic = "force-dynamic";
 

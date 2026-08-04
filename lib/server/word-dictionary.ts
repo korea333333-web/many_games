@@ -1,9 +1,9 @@
 import { WORD_CHAIN_WORDS } from "../games/word-bank.ts";
 
-const DEFAULT_SUPABASE_URL = "https://stusvfgazqxieybufdlc.supabase.co";
+const DEFAULT_SUPABASE_URL = "https://uhvjxyenxqqgyjwihhlc.supabase.co";
 // Publishable keys are designed to be embedded in application code. RLS still
 // controls which dictionary rows can be read.
-const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Qdumvzg4LKRakWqNRD-W2A_KaAhAoTF";
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hcZh8ZTVeqnyBQVphaspnQ_AIx1_5lX";
 
 function normalizeWord(value: unknown) {
   return String(value ?? "").normalize("NFC").replace(/[^가-힣]/g, "").trim();
@@ -15,7 +15,11 @@ export async function isKnownWord(value: unknown) {
   if (WORD_CHAIN_WORDS.has(word)) return true;
 
   const baseUrl = String(process.env.SUPABASE_URL ?? DEFAULT_SUPABASE_URL).replace(/\/$/, "");
-  const anonKey = String(process.env.SUPABASE_ANON_KEY ?? DEFAULT_SUPABASE_PUBLISHABLE_KEY);
+  const anonKey = String(
+    process.env.SUPABASE_PUBLISHABLE_KEY
+    ?? process.env.SUPABASE_ANON_KEY
+    ?? DEFAULT_SUPABASE_PUBLISHABLE_KEY,
+  );
   if (!baseUrl || !anonKey) return false;
 
   try {

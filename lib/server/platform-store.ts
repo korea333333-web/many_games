@@ -84,7 +84,7 @@ const ONLINE_WINDOW_MS = 2 * 60_000;
 const HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 const MAINTENANCE_INTERVAL_MS = 15_000;
 const MAX_MESSAGES = 500;
-const DEFAULT_SUPABASE_URL = "https://stusvfgazqxieybufdlc.supabase.co";
+const DEFAULT_SUPABASE_URL = "https://uhvjxyenxqqgyjwihhlc.supabase.co";
 const ROUND_GAMES = new Set<GameId>(["drawing", "chosung", "same-answer"]);
 const ALLOWED_ROUND_COUNTS = new Set([3, 5, 7, 10]);
 
