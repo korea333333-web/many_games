@@ -460,7 +460,8 @@ export function GamePlatform() {
           <div className="top-actions">
             <button className="rulebook-trigger" onClick={() => { setRulebookGameId(gameFilter === "all" ? "gomoku" : gameFilter); setRulebookOpen(true); }}><span aria-hidden="true">▥</span><strong>게임 사전</strong></button>
             <button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={openChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button>
-            <button className="profile-button" onClick={() => setNicknameOpen(true)} aria-label="내 프로필 열기"><ProfileAvatar nickname={identity.nickname} avatarUrl={authAccount?.avatarUrl} /><strong>{identity.nickname}</strong></button>
+            {!authAccount && <button type="button" className="top-login-button" onClick={signInWithGoogle} disabled={authBusy} aria-label="Google 계정으로 로그인"><b aria-hidden="true">G</b><span>{authBusy ? "이동 중…" : "Google 로그인"}</span></button>}
+            <button className={authAccount ? "profile-button" : "profile-button guest-profile"} onClick={() => setNicknameOpen(true)} aria-label="내 프로필 열기"><ProfileAvatar nickname={identity.nickname} avatarUrl={authAccount?.avatarUrl} /><strong>{identity.nickname}</strong></button>
             <button className="primary-button create-button" onClick={() => setCreateOpen(true)}>＋ 방 만들기</button>
           </div>
         </header>
