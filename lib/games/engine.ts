@@ -4,7 +4,7 @@ import {
   CHOSUNG_QUESTIONS,
   DRAWING_PROMPTS,
   LIAR_WORDS,
-  SAME_ANSWER_PROMPTS,
+  SAME_ANSWER_QUESTIONS,
   WORD_CHAIN_WORDS,
 } from "./word-bank.ts";
 
@@ -52,6 +52,7 @@ export type DavinciTile = {
 
 const INITIAL_SOUND_I_OR_Y_MEDIALS = new Set([2, 3, 6, 7, 12, 17, 20]); // ㅑ, ㅒ, ㅕ, ㅖ, ㅛ, ㅠ, ㅣ
 const WORD_CHAIN_TURN_MS = 20_000;
+const SAME_ANSWER_REVEAL_MS = 3_000;
 
 function seededIndex(seed: number, length: number, salt = 0) {
   const x = Math.sin(seed * 9301 + salt * 49297) * 10000;
@@ -66,6 +67,20 @@ function uniquePick<T>(items: readonly T[], count: number, seed: number) {
     if (!chosen.includes(item)) chosen.push(item);
   }
   return chosen;
+}
+
+function sameAnswerRound(seed: number, round: number, playerCount: number, usedQuestionIndexes: number[] = []) {
+  let questionIndex = seededIndex(seed + round * 97, SAME_ANSWER_QUESTIONS.length, round);
+  for (let offset = 0; offset < SAME_ANSWER_QUESTIONS.length && usedQuestionIndexes.includes(questionIndex); offset++) {
+    questionIndex = (questionIndex + 1) % SAME_ANSWER_QUESTIONS.length;
+  }
+  const question = SAME_ANSWER_QUESTIONS[questionIndex];
+  const optionCount = Math.min(question.options.length, Math.max(4, playerCount + 1));
+  return {
+    questionIndex,
+    prompt: question.prompt,
+    options: uniquePick(question.options, optionCount, seed + round * 131),
+  };
 }
 
 function seededShuffle<T>(items: readonly T[], seed: number) {
@@ -200,13 +215,18 @@ export function createGame(
       base.state = { ...question, maxRounds: options.rounds ?? 5, initial: toChosung(question.answer), revealed: 0, startedAt: seed, guesses: [] };
       break;
     }
-    case "same-answer":
+    case "same-answer": {
+      const firstRound = sameAnswerRound(seed, 1, seated.length);
       base.state = {
-        prompt: SAME_ANSWER_PROMPTS[seededIndex(seed, SAME_ANSWER_PROMPTS.length)],
+        ...firstRound,
+        maxRounds: options.rounds === 10 ? 10 : 5,
+        usedQuestionIndexes: [firstRound.questionIndex],
         submissions: {},
         results: null,
+        revealUntil: null,
       };
       break;
+    }
     case "liar":
       base.state = {
         word: LIAR_WORDS[seededIndex(seed, LIAR_WORDS.length)],
@@ -394,6 +414,16 @@ export function advanceTimedGame(current: GameEnvelope, now: number): GameEnvelo
       game.state.answerRevealUntil = now + 5_000;
       game.state.roundEndsAt = null;
       game.message = `시간 종료! 정답은 '${game.state.prompt}'`;
+    }
+  }
+  if (game.gameId === "same-answer" && game.state.results) {
+    const revealUntil = Number(game.state.revealUntil ?? 0);
+    if (revealUntil && now >= revealUntil) {
+      if (game.round >= Number(game.state.maxRounds ?? 5)) {
+        game.state.revealUntil = null;
+        return finishByScore(game, `${game.state.maxRounds}라운드가 모두 끝났습니다!`);
+      }
+      return nextSameAnswerRound(game);
     }
   }
   return game;
@@ -749,23 +779,43 @@ function toChosung(value: string) {
 }
 
 function reduceSameAnswer(game: GameEnvelope, command: GameCommand) {
-  if (command.type !== "SUBMIT_ANSWER") return fail(game, "답을 입력하세요.");
+  if (command.type !== "SELECT_ANSWER") return fail(game, "보기를 선택하세요.");
+  if (game.state.results) return fail(game, "다음 라운드를 준비하고 있습니다.");
+  if (game.state.submissions[command.playerId]) return fail(game, "이미 선택을 완료했습니다.");
   const answer = String(command.payload?.answer ?? "").trim().slice(0, 24);
-  if (!answer) return fail(game, "빈 답은 낼 수 없습니다.");
+  if (!(game.state.options as string[]).includes(answer)) return fail(game, "보기 중 하나를 선택하세요.");
   game.state.submissions[command.playerId] = answer;
-  game.message = `${Object.keys(game.state.submissions).length}/${game.players.length} 제출 완료`;
+  game.message = `${Object.keys(game.state.submissions).length}/${game.players.length}명 선택 완료`;
   if (Object.keys(game.state.submissions).length === game.players.length) {
     const counts = Object.values(game.state.submissions as Record<string, string>).reduce<Record<string, number>>((acc, value) => {
       acc[value] = (acc[value] ?? 0) + 1; return acc;
     }, {});
-    game.state.results = Object.entries(game.state.submissions as Record<string, string>)
-      .map(([playerId, value]) => ({ playerId, value, unique: counts[value] === 1 }));
-    for (const result of game.state.results) if (result.unique) game.players[playerIndex(game, result.playerId)].score += 1;
-    game.phase = "finished";
-    const results = game.state.results as Array<{ playerId: string; unique: boolean }>;
-    game.winnerIds = results.filter((result) => result.unique).map((result) => result.playerId);
-    game.message = `${game.winnerIds.length}명이 겹치지 않는 답을 냈습니다.`;
+    const scorerIds = Object.entries(game.state.submissions as Record<string, string>)
+      .filter(([, value]) => counts[value] === 1)
+      .map(([playerId]) => playerId);
+    scorerIds.forEach((playerId) => { game.players[playerIndex(game, playerId)].score += 1; });
+    game.state.results = { scorerIds };
+    game.state.revealUntil = (command.now ?? game.seed) + SAME_ANSWER_REVEAL_MS;
+    const scorerNames = scorerIds.map((playerId) => game.players.find((player) => player.id === playerId)?.name).filter(Boolean);
+    game.message = scorerNames.length ? `${scorerNames.join(", ")} +1점!` : "이번 라운드는 득점자가 없습니다.";
+    game.log = appendLog(game, `${game.round}라운드 · ${game.message}`);
   }
+  return game;
+}
+
+function nextSameAnswerRound(game: GameEnvelope) {
+  game.round += 1;
+  const usedQuestionIndexes = game.state.usedQuestionIndexes as number[];
+  const nextRound = sameAnswerRound(game.seed, game.round, game.players.length, usedQuestionIndexes);
+  game.state = {
+    ...nextRound,
+    maxRounds: game.state.maxRounds,
+    usedQuestionIndexes: [...usedQuestionIndexes, nextRound.questionIndex],
+    submissions: {},
+    results: null,
+    revealUntil: null,
+  };
+  game.message = `${game.round}라운드 · 남들과 다른 답을 골라보세요!`;
   return game;
 }
 
@@ -1015,8 +1065,11 @@ function finish(game: GameEnvelope, winnerIds: string[], message: string) {
 
 function finishByScore(game: GameEnvelope, message: string) {
   const highScore = Math.max(...game.players.map((player) => player.score));
-  const winnerIds = game.players.filter((player) => player.score === highScore).map((player) => player.id);
-  return finish(game, winnerIds, message);
+  game.phase = "finished";
+  game.winnerIds = game.players.filter((player) => player.score === highScore).map((player) => player.id);
+  game.message = message;
+  game.log = appendLog(game, message);
+  return game;
 }
 
 export function projectGame(game: GameEnvelope, viewerId: string, now = Date.now()): GameEnvelope {
@@ -1042,6 +1095,12 @@ export function projectGame(game: GameEnvelope, viewerId: string, now = Date.now
     projected.state.isLiar = viewerIndex === projected.state.liarIndex;
     if (projected.state.isLiar && !projected.state.revealed) projected.state.word = null;
     projected.state.liarIndex = projected.state.revealed ? projected.state.liarIndex : null;
+  }
+  if (projected.gameId === "same-answer") {
+    projected.state.submissions = Object.fromEntries(
+      Object.entries(projected.state.submissions as Record<string, string>)
+        .map(([playerId, answer]) => [playerId, playerId === viewerId ? answer : true]),
+    );
   }
   if (projected.gameId === "uno") {
     const hands = projected.state.hands as Record<string, Array<UnoCard | null>>;

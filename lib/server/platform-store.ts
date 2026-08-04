@@ -83,7 +83,7 @@ const HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 const MAINTENANCE_INTERVAL_MS = 15_000;
 const MAX_MESSAGES = 500;
 const DEFAULT_SUPABASE_URL = "https://stusvfgazqxieybufdlc.supabase.co";
-const ROUND_GAMES = new Set<GameId>(["drawing", "chosung"]);
+const ROUND_GAMES = new Set<GameId>(["drawing", "chosung", "same-answer"]);
 const ALLOWED_ROUND_COUNTS = new Set([3, 5, 7, 10]);
 
 function emptyState(): PlatformState {
@@ -212,6 +212,7 @@ function parseSettings(value: unknown): GameOptions {
 function sanitizeSettings(gameId: GameId, value: unknown): GameOptions {
   if (!ROUND_GAMES.has(gameId)) return {};
   const parsed = parseSettings(value);
+  if (gameId === "same-answer") return { rounds: parsed.rounds === 10 ? 10 : 5 };
   return { rounds: parsed.rounds ?? 5 };
 }
 
@@ -462,6 +463,7 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
   const type = String(body.type ?? "heartbeat");
   const payload = asRecord(body.payload);
   const playerId = cleanId(body.playerId);
+  const requestedRoomId = cleanText(body.roomId, 80);
 
   const result = await mutateState(async (state) => {
     const actor = upsertPlayer(state, playerId, body.nickname, true).player;
@@ -477,7 +479,13 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
     if (type === "sendDirect") return { value: sendMessage(state, actor.id, cleanId(payload.recipientId), "direct", payload.body) };
     throw new Error("지원하지 않는 요청입니다.");
   }, auth);
-  return result.value;
+  const value = asRecord(result.value);
+  const valueRoomId = cleanText(value.roomId, 80);
+  const snapshotRoomId = type === "leaveRoom" ? "" : valueRoomId || requestedRoomId || cleanText(payload.roomId, 80);
+  return {
+    ...value,
+    snapshot: makeSnapshot(result.state, playerId, snapshotRoomId),
+  };
 }
 
 async function createRoom(state: PlatformState, hostId: string, payload: JsonRecord) {

@@ -67,7 +67,7 @@ export const GAME_CATALOG: GameInfo[] = [
     id: "same-answer",
     name: "같은 답 피하기",
     shortName: "답 피하기",
-    description: "남들과 겹치지 않는 답을 적기",
+    description: "남들과 겹치지 않는 보기를 골라 점수 얻기",
     minPlayers: 3,
     maxPlayers: 10,
     accent: "#c084fc",

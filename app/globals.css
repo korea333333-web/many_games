@@ -133,6 +133,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .toast { position: fixed; left: 50%; bottom: 24px; z-index: 80; min-height: 46px; max-width: min(560px, 90vw); transform: translateX(-50%); border: 1px solid #5f6579; border-radius: 14px; padding: 0 12px 0 16px; background: #282c36; color: white; box-shadow: var(--shadow); }
 .toast span { margin-left: 13px; color: var(--muted); }
+.action-loading { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 20px; background: rgba(8,11,19,.42); backdrop-filter: blur(3px); opacity: 0; animation: action-loading-in .18s .1s ease forwards; }
+.action-loading-card { width: min(280px, 86vw); display: grid; justify-items: center; gap: 7px; padding: 24px 20px 21px; border: 1px solid rgba(180,197,255,.35); border-radius: 24px; background: rgba(32,35,44,.96); box-shadow: 0 24px 70px rgba(0,0,0,.46); }
+.action-loading-card strong { color: white; font-size: 14px; }
+.action-loading-card small { color: var(--muted); font-size: 10px; }
+.loading-orbit { position: relative; width: 58px; height: 58px; margin-bottom: 5px; display: block; animation: loading-rotate 1.05s linear infinite; }
+.loading-orbit::before { content: ""; position: absolute; inset: 14px; border-radius: 50%; background: linear-gradient(145deg, var(--blue), #7998ff); box-shadow: 0 0 24px rgba(37,99,235,.5); }
+.loading-orbit i { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 12px rgba(163,230,53,.55); }
+.loading-orbit i:nth-child(1) { top: 0; left: 24px; }
+.loading-orbit i:nth-child(2) { right: 2px; bottom: 7px; background: var(--coral); }
+.loading-orbit i:nth-child(3) { left: 2px; bottom: 7px; background: var(--blue-soft); }
+@keyframes action-loading-in { to { opacity: 1; } }
+@keyframes loading-rotate { to { transform: rotate(360deg); } }
 
 .room-screen { min-height: 100vh; background: radial-gradient(circle at 50% 0, rgba(37,99,235,.16), transparent 42%), var(--navy); }
 .room-topbar { min-height: 78px; padding: 12px 24px; display: grid; grid-template-columns: 150px 1fr 150px; align-items: center; border-bottom: 1px solid var(--line); background: rgba(29,31,39,.96); }
@@ -300,12 +312,24 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .hint-stack p { margin: 0; display: grid; grid-template-columns: 70px 1fr; padding: 10px 13px; border-radius: 12px; background: #292c35; text-align: left; }
 .hint-stack b { color: var(--blue-soft); }
 .quiz-game > .secondary-button { margin-bottom: 14px; }
-.same-answer h3 { margin: 12px 0 20px; padding: 25px; border-radius: 22px; background: var(--paper); color: #171923; font-size: 27px; }
-.same-answer > p { color: var(--muted); }
-.answer-results { display: grid; gap: 8px; }
-.answer-results > div { display: grid; grid-template-columns: 1fr 1fr 60px; gap: 8px; padding: 13px; border-radius: 14px; text-align: left; background: #292c35; }
-.answer-results .unique { box-shadow: inset 4px 0 var(--lime); }
-.answer-results .duplicate { opacity: .62; }
+.same-answer h3 { margin: 12px 0 13px; padding: 24px; border-radius: 22px; background: linear-gradient(145deg, #f6f0e5, #e9edf7); color: #171923; font-size: clamp(22px, 4vw, 29px); box-shadow: inset 0 -1px rgba(0,0,0,.08); }
+.same-answer-guide { margin: 0 0 14px; color: var(--muted); font-size: 11px; }
+.same-answer-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.same-answer-options button { min-height: 58px; display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 9px; border: 1px solid #454b5c; border-radius: 15px; padding: 8px 12px; background: #292c35; color: white; text-align: left; transition: transform .14s ease, border-color .14s ease, background .14s ease; }
+.same-answer-options button:not(:disabled):hover { transform: translateY(-2px); border-color: var(--blue-soft); background: #303644; }
+.same-answer-options button > span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; background: #191c24; color: var(--blue-soft); font-size: 11px; font-weight: 950; }
+.same-answer-options button > strong { font-size: 13px; }
+.same-answer-options button > b { color: var(--lime); font-size: 9px; }
+.same-answer-options button.selected { border-color: var(--lime); background: rgba(80,111,35,.24); box-shadow: inset 0 0 0 1px rgba(163,230,53,.25); opacity: 1; }
+.same-answer-progress { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 0; padding: 10px 12px; border-radius: 12px; background: #20232b; color: var(--muted); font-size: 11px; text-align: left; }
+.same-answer-progress b { flex: 0 0 auto; color: var(--blue-soft); font-variant-numeric: tabular-nums; }
+.same-answer-score-reveal { min-height: 260px; display: grid; align-content: center; justify-items: center; gap: 10px; padding: 25px; border: 1px solid rgba(163,230,53,.35); border-radius: 24px; background: radial-gradient(circle at 50% 15%, rgba(163,230,53,.16), transparent 45%), #24272f; animation: victory-pop .3s ease-out both; }
+.same-answer-score-reveal > span { color: var(--blue-soft); font-size: 11px; font-weight: 950; letter-spacing: .1em; }
+.same-answer-score-reveal h4 { margin: 0; color: white; font-size: 24px; }
+.same-answer-score-reveal > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.same-answer-score-reveal strong { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: 999px; background: #171a21; color: white; font-size: 12px; }
+.same-answer-score-reveal strong b { color: var(--lime); }
+.same-answer-score-reveal p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
 .secret-card { min-height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 24px; background: linear-gradient(145deg, #2563eb, #5b7cf0); }
 .secret-card.liar { background: linear-gradient(145deg, #9f1239, #fb7185); }
 .secret-card span { font-size: 12px; opacity: .82; }
@@ -454,6 +478,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .chess-board-frame { padding: 7px; }
   .chess-player-bar { min-height: 52px; }
   .chess-piece { font-size: clamp(31px, 10vw, 53px); }
+  .same-answer-options { grid-template-columns: 1fr; }
+  .same-answer-options button { min-height: 52px; }
   .prompt-picker > div { grid-template-columns: 1fr; }
   .prompt-picker > div button { min-height: 60px; }
   .answer-feedback.left { left: 6px; }

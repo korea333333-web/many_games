@@ -259,9 +259,42 @@ function Chosung({ game, disabled, onAction }: Omit<GameViewProps, "playerId">) 
 }
 
 function SameAnswer({ game, playerId, disabled, onAction }: GameViewProps) {
-  const [answer, setAnswer] = useState("");
-  const submitted = Boolean(game.state.submissions[playerId]);
-  return <div className="same-answer"><span className="eyebrow">남들과 겹치면 0점</span><h3>{game.state.prompt}</h3>{game.state.results ? <div className="answer-results">{game.state.results.map((result: { playerId: string; value: string; unique: boolean }) => <div className={result.unique ? "unique" : "duplicate"} key={result.playerId}><strong>{game.players.find((p) => p.id === result.playerId)?.name}</strong><span>{result.value}</span><b>{result.unique ? "+1" : "겹침"}</b></div>)}</div> : <><p>{Object.keys(game.state.submissions).length}/{game.players.length}명이 답을 냈어요.</p><form className="game-input" onSubmit={(event) => { event.preventDefault(); if (answer.trim()) onAction({ type: "SUBMIT_ANSWER", payload: { answer } }); }}><input value={answer} onChange={(event) => setAnswer(event.target.value)} disabled={disabled || submitted} placeholder={submitted ? "제출 완료" : "나만 생각할 것 같은 답"} /><button disabled={submitted}>제출</button></form></>}</div>;
+  const submittedAnswer = game.state.submissions[playerId] as string | undefined;
+  const results = game.state.results as { scorerIds: string[] } | null;
+  const options = game.state.options as string[];
+  const submittedCount = Object.keys(game.state.submissions).length;
+  const finalRound = game.round >= Number(game.state.maxRounds ?? 5);
+  return (
+    <div className="same-answer">
+      <span className="eyebrow">남들과 같은 보기를 고르면 0점 · 혼자 고르면 +1점</span>
+      <h3>{game.state.prompt}</h3>
+      {results ? (
+        <div className="same-answer-score-reveal">
+          <span>{game.round}라운드 결과</span>
+          <h4>{results.scorerIds.length ? "이번 라운드 득점자" : "이번 라운드 득점자 없음"}</h4>
+          {results.scorerIds.length > 0 && <div>{results.scorerIds.map((id) => <strong key={id}>{game.players.find((player) => player.id === id)?.name}<b>+1</b></strong>)}</div>}
+          <p>{finalRound ? "잠시 후 최종 결과를 보여드릴게요." : "잠시 후 다음 라운드가 시작됩니다."}</p>
+        </div>
+      ) : (
+        <>
+          <p className="same-answer-guide">참가자 {game.players.length}명에 맞춰 보기 {options.length}개가 준비됐어요.</p>
+          <div className="same-answer-options">
+            {options.map((option, index) => (
+              <button
+                key={option}
+                className={submittedAnswer === option ? "selected" : ""}
+                disabled={disabled || Boolean(submittedAnswer) || game.phase === "finished"}
+                onClick={() => onAction({ type: "SELECT_ANSWER", payload: { answer: option } })}
+              >
+                <span>{index + 1}</span><strong>{option}</strong>{submittedAnswer === option && <b>선택 완료</b>}
+              </button>
+            ))}
+          </div>
+          <p className="same-answer-progress">{submittedAnswer ? "선택 완료! 다른 참가자를 기다리는 중…" : "나만 고를 것 같은 보기를 선택하세요."}<b>{submittedCount}/{game.players.length}</b></p>
+        </>
+      )}
+    </div>
+  );
 }
 
 function Liar({ game, playerId, disabled, onAction }: GameViewProps) {

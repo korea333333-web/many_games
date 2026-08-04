@@ -168,12 +168,44 @@ test("chosung reveals hints as time passes", () => {
   assert.equal(typeof projected.state.firstSyllable, "string");
 });
 
-test("same answer only scores unique submissions", () => {
-  let game = createGame("same-answer", players.slice(0, 3), 6);
-  game = reduceGame(game, { type: "SUBMIT_ANSWER", playerId: "a", payload: { answer: "사과" } });
-  game = reduceGame(game, { type: "SUBMIT_ANSWER", playerId: "b", payload: { answer: "사과" } });
-  game = reduceGame(game, { type: "SUBMIT_ANSWER", playerId: "c", payload: { answer: "딸기" } });
-  assert.deepEqual(game.winnerIds, ["c"]);
+test("same answer uses player-sized choices and continues after scoring", () => {
+  let game = createGame("same-answer", players.slice(0, 3), 6, { rounds: 5 });
+  assert.equal(game.state.options.length, 4);
+  const [shared, unique] = game.state.options;
+  game = reduceGame(game, { type: "SELECT_ANSWER", playerId: "a", payload: { answer: shared }, now: 1_000 });
+  game = reduceGame(game, { type: "SELECT_ANSWER", playerId: "b", payload: { answer: shared }, now: 1_100 });
+  game = reduceGame(game, { type: "SELECT_ANSWER", playerId: "c", payload: { answer: unique }, now: 1_200 });
+  assert.equal(game.phase, "playing");
+  assert.equal(game.players[2].score, 1);
+  assert.deepEqual(game.state.results.scorerIds, ["c"]);
+  game = advanceTimedGame(game, 4_201);
+  assert.equal(game.round, 2);
+  assert.equal(game.phase, "playing");
+  assert.deepEqual(game.state.submissions, {});
+});
+
+test("same answer expands to ten choices for ten players", () => {
+  const manyPlayers = Array.from({ length: 10 }, (_, index) => ({ id: `p${index}`, name: `플레이어${index}` }));
+  const game = createGame("same-answer", manyPlayers, 8, { rounds: 10 });
+  assert.equal(game.state.maxRounds, 10);
+  assert.equal(game.state.options.length, 10);
+});
+
+test("same answer finishes only after all configured rounds", () => {
+  let game = createGame("same-answer", players.slice(0, 3), 9, { rounds: 5 });
+  let now = 10_000;
+  for (let round = 1; round <= 5; round++) {
+    const answer = game.state.options[0];
+    for (const player of players.slice(0, 3)) {
+      game = reduceGame(game, { type: "SELECT_ANSWER", playerId: player.id, payload: { answer }, now });
+      now += 10;
+    }
+    game = advanceTimedGame(game, now + 3_001);
+    now += 3_100;
+    if (round < 5) assert.equal(game.phase, "playing");
+  }
+  assert.equal(game.phase, "finished");
+  assert.equal(game.round, 5);
 });
 
 test("liar projection hides the word only from the liar", () => {

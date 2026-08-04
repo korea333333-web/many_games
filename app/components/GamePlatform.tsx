@@ -24,6 +24,16 @@ type Snapshot = {
 };
 
 const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], globalMessages: [], directMessages: [], activeRoom: null };
+const ACTION_LOADING_LABELS: Record<string, string> = {
+  createRoom: "새 방을 만들고 있어요",
+  joinRoom: "방에 들어가는 중이에요",
+  leaveRoom: "로비로 돌아가는 중이에요",
+  startGame: "게임을 준비하고 있어요",
+  gameAction: "플레이를 반영하고 있어요",
+  setNickname: "프로필을 저장하고 있어요",
+  sendGlobal: "메시지를 보내고 있어요",
+  sendDirect: "메시지를 보내고 있어요",
+};
 
 function playerCountLabel(game: Pick<GameInfo, "minPlayers" | "maxPlayers">) {
   return game.minPlayers === game.maxPlayers ? `${game.minPlayers}명` : `${game.minPlayers}~${game.maxPlayers}명`;
@@ -47,6 +57,7 @@ export function GamePlatform() {
   const [joinTarget, setJoinTarget] = useState<RoomListItem | null>(null);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingLabel, setLoadingLabel] = useState("잠시만 기다려 주세요");
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const pollInFlight = useRef(false);
   const snapshotRef = useRef<Snapshot>(EMPTY_SNAPSHOT);
@@ -70,29 +81,35 @@ export function GamePlatform() {
     else localStorage.removeItem("game-lobby-active-room");
   }, [identity, activeRoomId]);
 
-  const refresh = useCallback(async () => {
+  const applySnapshot = useCallback((data: Snapshot, expectedRoomId: string | null) => {
     if (!identity) return;
+    const previous = snapshotRef.current;
+    const allMessages = [...data.globalMessages, ...data.directMessages];
+    const newestMessageId = latestMessageId(allMessages);
+    if (!chatOpenRef.current && hasUnreadMessage(allMessages, latestMessageIdRef.current, identity.id)) setHasUnreadChat(true);
+    latestMessageIdRef.current = Math.max(latestMessageIdRef.current ?? 0, newestMessageId);
+    if (previous.activeRoom?.game && !data.activeRoom?.game && previous.activeRoom.game.phase !== "finished") {
+      setNotice("필요한 인원이 나가 게임이 중단되었습니다. 대기방으로 돌아왔습니다.");
+    }
+    snapshotRef.current = data;
+    setSnapshot(data);
+    if (expectedRoomId && !data.activeRoom) setActiveRoomId(null);
+  }, [identity]);
+
+  const refresh = useCallback(async (roomIdOverride?: string | null) => {
+    if (!identity) return;
+    const roomId = roomIdOverride === undefined ? activeRoomId : roomIdOverride;
     const params = new URLSearchParams({ playerId: identity.id, nickname: identity.nickname });
-    if (activeRoomId) params.set("roomId", activeRoomId);
+    if (roomId) params.set("roomId", roomId);
     try {
       const response = await fetch(`/api/sync?${params}`, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "서버 연결 실패");
-      const previous = snapshotRef.current;
-      const allMessages = [...(data.globalMessages as ChatMessage[]), ...(data.directMessages as ChatMessage[])];
-      const newestMessageId = latestMessageId(allMessages);
-      if (!chatOpenRef.current && hasUnreadMessage(allMessages, latestMessageIdRef.current, identity.id)) setHasUnreadChat(true);
-      latestMessageIdRef.current = Math.max(latestMessageIdRef.current ?? 0, newestMessageId);
-      if (previous.activeRoom?.game && !data.activeRoom?.game && previous.activeRoom.game.phase !== "finished") {
-        setNotice("필요한 인원이 나가 게임이 중단되었습니다. 대기방으로 돌아왔습니다.");
-      }
-      snapshotRef.current = data;
-      setSnapshot(data);
-      if (activeRoomId && !data.activeRoom) setActiveRoomId(null);
+      applySnapshot(data as Snapshot, roomId);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "서버 연결 실패");
     }
-  }, [identity, activeRoomId]);
+  }, [identity, activeRoomId, applySnapshot]);
 
   useEffect(() => {
     if (!identity) return;
@@ -110,12 +127,13 @@ export function GamePlatform() {
   const command = useCallback(async (type: string, payload: Record<string, unknown> = {}) => {
     if (!identity) return null;
     setLoading(true);
+    setLoadingLabel(ACTION_LOADING_LABELS[type] ?? "요청을 처리하고 있어요");
     setNotice("");
     try {
       const response = await fetch("/api/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type, playerId: identity.id, nickname: identity.nickname, payload }),
+        body: JSON.stringify({ type, playerId: identity.id, nickname: identity.nickname, roomId: activeRoomId, payload }),
       });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "요청 실패");
@@ -124,7 +142,14 @@ export function GamePlatform() {
         localStorage.setItem("game-lobby-identity", JSON.stringify(next));
         setIdentity(next);
       }
-      await refresh();
+      const nextRoomId = type === "leaveRoom"
+        ? null
+        : (type === "createRoom" || type === "joinRoom") && data.roomId
+          ? String(data.roomId)
+          : activeRoomId;
+      if (data.snapshot) applySnapshot(data.snapshot as Snapshot, nextRoomId);
+      else await refresh(nextRoomId);
+      if (nextRoomId !== activeRoomId) setActiveRoomId(nextRoomId);
       return data;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "요청 실패");
@@ -132,7 +157,7 @@ export function GamePlatform() {
     } finally {
       setLoading(false);
     }
-  }, [identity, refresh]);
+  }, [identity, activeRoomId, applySnapshot, refresh]);
 
   const rooms = useMemo(() => snapshot.rooms.filter((room) => {
     if (gameFilter !== "all" && room.gameId !== gameFilter) return false;
@@ -157,18 +182,20 @@ export function GamePlatform() {
     const next = { ...identity!, nickname: nickname.trim().slice(0, 14) };
     if (!next.nickname) return;
     setLoading(true);
+    setLoadingLabel(ACTION_LOADING_LABELS.setNickname);
     setNotice("");
     try {
       const response = await fetch("/api/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "setNickname", playerId: next.id, nickname: next.nickname, payload: {} }),
+        body: JSON.stringify({ type: "setNickname", playerId: next.id, nickname: next.nickname, roomId: activeRoomId, payload: {} }),
       });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "닉네임 변경 실패");
       const saved = { ...next, nickname: data.player?.nickname ?? next.nickname };
       localStorage.setItem("game-lobby-identity", JSON.stringify(saved));
       setIdentity(saved);
+      if (data.snapshot) applySnapshot(data.snapshot as Snapshot, activeRoomId);
       setNicknameOpen(false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "닉네임 변경 실패");
@@ -183,7 +210,6 @@ export function GamePlatform() {
     const result = await command("joinRoom", { roomId: room.id, password });
     if (result) {
       setJoinTarget(null);
-      setActiveRoomId(room.id);
     }
   };
 
@@ -199,7 +225,7 @@ export function GamePlatform() {
           room={snapshot.activeRoom}
           identity={identity}
           loading={loading}
-          onLeave={async () => { await command("leaveRoom", { roomId: activeRoomId }); setActiveRoomId(null); }}
+          onLeave={() => command("leaveRoom", { roomId: activeRoomId })}
           onStart={() => command("startGame", { roomId: activeRoomId })}
           onAction={(gameCommand) => command("gameAction", { roomId: activeRoomId, command: gameCommand })}
           onChat={openChat}
@@ -207,6 +233,7 @@ export function GamePlatform() {
         />
         <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
         {notice && <Toast message={notice} onClose={() => setNotice("")} />}
+        {loading && <ActionLoading label={loadingLabel} />}
       </>
     );
   }
@@ -255,10 +282,11 @@ export function GamePlatform() {
 
       <button className="mobile-create" onClick={() => setCreateOpen(true)} aria-label="방 만들기">＋</button>
       <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
-      {createOpen && <CreateRoomModal onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) { setCreateOpen(false); setActiveRoomId(result.roomId); } }} />}
+      {createOpen && <CreateRoomModal loading={loading} onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) setCreateOpen(false); }} />}
       {nicknameOpen && <NicknameModal initialValue={identity.nickname} loading={loading} onClose={() => setNicknameOpen(false)} onSave={saveNickname} />}
       {joinTarget && <PasswordModal roomTitle={joinTarget.title} loading={loading} onClose={() => setJoinTarget(null)} onSubmit={(password) => enterRoom(joinTarget, password)} />}
       {notice && <Toast message={notice} onClose={() => setNotice("")} />}
+      {loading && <ActionLoading label={loadingLabel} />}
     </div>
   );
 }
@@ -309,24 +337,25 @@ function RoomCard({ room, onJoin }: { room: RoomListItem; onJoin: () => void }) 
   );
 }
 
-function CreateRoomModal({ onClose, onCreate }: { onClose: () => void; onCreate: (payload: Record<string, unknown>) => void }) {
+function CreateRoomModal({ loading, onClose, onCreate }: { loading: boolean; onClose: () => void; onCreate: (payload: Record<string, unknown>) => void }) {
   const [gameId, setGameId] = useState<GameId>("gomoku");
   const [title, setTitle] = useState("");
   const [password, setPassword] = useState("");
   const [rounds, setRounds] = useState(5);
   const game = GAME_BY_ID[gameId];
-  const supportsRounds = gameId === "drawing" || gameId === "chosung";
+  const supportsRounds = gameId === "drawing" || gameId === "chosung" || gameId === "same-answer";
+  const roundOptions = gameId === "same-answer" ? [5, 10] : [3, 5, 7, 10];
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop" onMouseDown={(event) => !loading && event.target === event.currentTarget && onClose()}>
       <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="create-title">
         <div className="modal-head"><div><span className="eyebrow">새로운 게임</span><h2 id="create-title">방 만들기</h2></div><button onClick={onClose} aria-label="닫기">×</button></div>
-        <label>게임 선택<select value={gameId} onChange={(event) => setGameId(event.target.value as GameId)}>{GAME_CATALOG.map((item) => <option key={item.id} value={item.id}>{item.name} · {playerCountLabel(item)}</option>)}</select></label>
+        <label>게임 선택<select value={gameId} onChange={(event) => { const nextGameId = event.target.value as GameId; setGameId(nextGameId); if (nextGameId === "same-answer" && rounds !== 5 && rounds !== 10) setRounds(5); }}>{GAME_CATALOG.map((item) => <option key={item.id} value={item.id}>{item.name} · {playerCountLabel(item)}</option>)}</select></label>
         <div className="selected-game"><span style={{ background: game.accent }}>{game.icon}</span><div><strong>{game.name}</strong><p>{game.description}</p></div></div>
-        {supportsRounds && <label>라운드 수<select value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{[3, 5, 7, 10].map((count) => <option key={count} value={count}>{count}라운드</option>)}</select></label>}
+        {supportsRounds && <label>라운드 수<select value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{roundOptions.map((count) => <option key={count} value={count}>{count}라운드</option>)}</select></label>}
         <label>방 제목<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={30} placeholder={`${game.name} 같이 해요`} /></label>
         <label>비밀번호 <small>선택</small><input value={password} onChange={(event) => setPassword(event.target.value)} maxLength={40} type="password" placeholder="비워두면 공개 방" /></label>
         <p className="modal-note">방에는 최대 10명까지 들어올 수 있으며, 남는 인원은 관전합니다.</p>
-        <div className="modal-actions"><button className="secondary-button" onClick={onClose}>취소</button><button className="primary-button" onClick={() => onCreate({ gameId, title, password, settings: supportsRounds ? { rounds } : {} })}>방 만들기</button></div>
+        <div className="modal-actions"><button className="secondary-button" onClick={onClose} disabled={loading}>취소</button><button className="primary-button" disabled={loading} onClick={() => onCreate({ gameId, title, password, settings: supportsRounds ? { rounds } : {} })}>{loading ? "만드는 중…" : "방 만들기"}</button></div>
       </div>
     </div>
   );
@@ -395,6 +424,18 @@ function ChatDrawer({ open, onClose, identity, snapshot, command }: {
         </>}
       </aside>
     </>
+  );
+}
+
+function ActionLoading({ label }: { label: string }) {
+  return (
+    <div className="action-loading" role="status" aria-live="polite" aria-label={label}>
+      <div className="action-loading-card">
+        <span className="loading-orbit" aria-hidden="true"><i /><i /><i /></span>
+        <strong>{label}</strong>
+        <small>곧 완료됩니다</small>
+      </div>
+    </div>
   );
 }
 
