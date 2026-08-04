@@ -11,9 +11,19 @@ import {
 } from "../games/engine.ts";
 import { isKnownWord } from "./word-dictionary.ts";
 import { getStateChangeTopics } from "./state-change-topics.ts";
+import {
+  buildLeaderboard,
+  emptyRankingState,
+  isAuthenticatedPlayerId,
+  isRankedGame,
+  normalizeRankingState,
+  recordCompletedMatch,
+  type RankingState,
+} from "../rankings.ts";
 
 type JsonRecord = Record<string, unknown>;
 type MemberRole = "player" | "spectator";
+type RoomSettings = GameOptions & { ranked?: boolean };
 
 type PlayerRecord = {
   id: string;
@@ -30,7 +40,7 @@ type RoomRecord = {
   status: "waiting" | "playing";
   capacity: number;
   passwordHash: string | null;
-  settings: GameOptions;
+  settings: RoomSettings;
   createdAt: string;
   updatedAt: string;
 };
@@ -46,6 +56,8 @@ type SessionRecord = {
   state: GameEnvelope;
   revision: number;
   updatedAt: string;
+  matchId?: string;
+  resultRecorded?: boolean;
 };
 
 type MessageRecord = {
@@ -63,6 +75,7 @@ type PlatformState = {
   members: Record<string, MemberRecord[]>;
   sessions: Record<string, SessionRecord>;
   messages: MessageRecord[];
+  rankings: RankingState;
   nextMessageId: number;
   lastMaintenanceAt: number;
 };
@@ -95,6 +108,7 @@ function emptyState(): PlatformState {
     members: {},
     sessions: {},
     messages: [],
+    rankings: emptyRankingState(),
     nextMessageId: 1,
     lastMaintenanceAt: 0,
   };
@@ -108,6 +122,7 @@ function normalizeState(value: unknown): PlatformState {
     members: asRecord(state.members) as Record<string, MemberRecord[]>,
     sessions: asRecord(state.sessions) as Record<string, SessionRecord>,
     messages: Array.isArray(state.messages) ? state.messages as MessageRecord[] : [],
+    rankings: normalizeRankingState(state.rankings),
     nextMessageId: Math.max(1, Number(state.nextMessageId) || 1),
     lastMaintenanceAt: Number(state.lastMaintenanceAt) || 0,
   };
@@ -211,21 +226,23 @@ function cleanId(value: unknown) {
   return id;
 }
 
-function parseSettings(value: unknown): GameOptions {
+function parseSettings(value: unknown): RoomSettings {
   try {
     const raw = typeof value === "string" ? JSON.parse(value) : value;
     const rounds = Number((raw as { rounds?: unknown } | null)?.rounds);
-    return ALLOWED_ROUND_COUNTS.has(rounds) ? { rounds } : {};
+    const ranked = (raw as { ranked?: unknown } | null)?.ranked === true;
+    return { ...(ALLOWED_ROUND_COUNTS.has(rounds) ? { rounds } : {}), ...(ranked ? { ranked: true } : {}) };
   } catch {
     return {};
   }
 }
 
-function sanitizeSettings(gameId: GameId, value: unknown): GameOptions {
-  if (!ROUND_GAMES.has(gameId)) return {};
+function sanitizeSettings(gameId: GameId, value: unknown): RoomSettings {
   const parsed = parseSettings(value);
-  if (gameId === "same-answer") return { rounds: parsed.rounds === 10 ? 10 : 5 };
-  return { rounds: parsed.rounds ?? 5 };
+  const ranked = isRankedGame(gameId) && parsed.ranked === true;
+  if (!ROUND_GAMES.has(gameId)) return ranked ? { ranked: true } : {};
+  const rounds = gameId === "same-answer" ? (parsed.rounds === 10 ? 10 : 5) : (parsed.rounds ?? 5);
+  return { rounds, ...(ranked ? { ranked: true } : {}) };
 }
 
 async function hashText(value: string) {
@@ -320,6 +337,7 @@ function runMaintenance(state: PlatformState, now = Date.now()) {
   let changed = false;
 
   for (const [roomId, session] of Object.entries(state.sessions)) {
+    if (session.state.phase === "finished") changed = recordSessionCompletion(state, roomId, session) || changed;
     const returnDelay = session.state.gameId === "chess" ? CHESS_FINISHED_RETURN_DELAY_MS : FINISHED_RETURN_DELAY_MS;
     if (session.state.phase !== "finished" || now - Date.parse(session.updatedAt) < returnDelay) continue;
     const room = state.rooms[roomId];
@@ -366,6 +384,24 @@ function advanceRoomGame(state: PlatformState, roomId: string, now = Date.now())
   session.state = advanced;
   session.revision += 1;
   session.updatedAt = nowIso(now);
+  recordSessionCompletion(state, roomId, session);
+  return true;
+}
+
+function recordSessionCompletion(state: PlatformState, roomId: string, session: SessionRecord) {
+  if (session.state.phase !== "finished" || session.resultRecorded) return false;
+  const room = state.rooms[roomId];
+  const matchId = session.matchId ?? crypto.randomUUID().replaceAll("-", "");
+  recordCompletedMatch(state.rankings, {
+    matchId,
+    gameId: session.state.gameId,
+    playerIds: session.state.players.map((player) => player.id),
+    winnerIds: session.state.winnerIds,
+    ranked: Boolean(room?.settings.ranked),
+    completedAt: session.updatedAt,
+  });
+  session.matchId = matchId;
+  session.resultRecorded = true;
   return true;
 }
 
@@ -444,6 +480,7 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
 
   return {
     rooms,
+    leaderboard: buildLeaderboard(state.rankings, (id) => state.players[id]?.nickname ?? `플레이어${id.slice(-4)}`),
     onlinePlayers,
     globalMessages,
     directMessages,
@@ -510,6 +547,9 @@ async function createRoom(state: PlatformState, hostId: string, payload: JsonRec
   const id = crypto.randomUUID().replaceAll("-", "");
   const title = cleanText(payload.title, 30) || `${game.name} 같이 해요`;
   const password = cleanText(payload.password, 40);
+  const settings = sanitizeSettings(gameId, payload.settings);
+  if (settings.ranked && !isAuthenticatedPlayerId(hostId)) throw new Error("랭크전은 Google 로그인 후 만들 수 있습니다.");
+  if (settings.ranked && password) throw new Error("랭크전은 누구나 참가할 수 있는 공개방으로 만들어 주세요.");
   const now = nowIso();
   leaveOtherRooms(state, hostId);
   state.rooms[id] = {
@@ -520,7 +560,7 @@ async function createRoom(state: PlatformState, hostId: string, payload: JsonRec
     status: "waiting",
     capacity: 10,
     passwordHash: password ? await hashText(password) : null,
-    settings: sanitizeSettings(gameId, payload.settings),
+    settings,
     createdAt: now,
     updatedAt: now,
   };
@@ -533,6 +573,7 @@ async function joinRoom(state: PlatformState, playerId: string, payload: JsonRec
   const room = state.rooms[roomId];
   if (!room) throw new Error("방을 찾을 수 없습니다.");
   if (!isGameAvailable(room.gameId)) throw new Error("현재 이용할 수 없는 게임의 방입니다.");
+  if (room.settings.ranked && !isAuthenticatedPlayerId(playerId)) throw new Error("랭크전은 Google 로그인 후 참가할 수 있습니다.");
   const existing = roomMembers(state, roomId).find((member) => member.playerId === playerId);
   if (!existing && roomMembers(state, roomId).length >= room.capacity) throw new Error("방이 가득 찼습니다.");
   if (room.passwordHash) {
@@ -566,6 +607,9 @@ function startGame(state: PlatformState, playerId: string, payload: JsonRecord) 
     .map((member) => ({ id: member.playerId, name: state.players[member.playerId]?.nickname ?? "플레이어" }));
   const info = GAME_BY_ID[room.gameId];
   if (members.length < info.minPlayers) throw new Error(`최소 ${info.minPlayers}명이 필요합니다.`);
+  if (room.settings.ranked && (members.length !== 2 || !members.every((member) => isAuthenticatedPlayerId(member.id)))) {
+    throw new Error("랭크전은 로그인한 플레이어 2명이 필요합니다.");
+  }
   const game = createGame(room.gameId, members.slice(0, info.maxPlayers), Date.now(), sanitizeSettings(room.gameId, room.settings));
   const previousRevision = state.sessions[roomId]?.revision ?? 0;
   state.sessions[roomId] = {
@@ -573,6 +617,8 @@ function startGame(state: PlatformState, playerId: string, payload: JsonRecord) 
     state: game,
     revision: previousRevision + 1,
     updatedAt: nowIso(),
+    matchId: crypto.randomUUID().replaceAll("-", ""),
+    resultRecorded: false,
   };
   room.status = "playing";
   room.updatedAt = nowIso();
@@ -587,6 +633,8 @@ async function applyGameAction(state: PlatformState, playerId: string, payload: 
   if (!session) throw new Error("아직 게임이 시작되지 않았습니다.");
   const rawCommand = asRecord(payload.command);
   if (!cleanText(rawCommand.type, 40)) throw new Error("올바르지 않은 게임 행동입니다.");
+  const room = state.rooms[roomId];
+  if (room?.settings.ranked && rawCommand.type === "REMATCH") throw new Error("랭크전은 대기방에서 새 경기로 시작해 주세요.");
   const command = {
     ...rawCommand,
     payload: { ...asRecord(rawCommand.payload) },
@@ -596,10 +644,16 @@ async function applyGameAction(state: PlatformState, playerId: string, payload: 
   if (session.state.gameId === "word-chain" && command.type === "SUBMIT_WORD") {
     command.payload!.dictionaryValid = await isKnownWord(command.payload?.word);
   }
+  const previousPhase = session.state.phase;
   const next = reduceGame(session.state, command);
+  if (previousPhase === "finished" && next.phase === "playing") {
+    session.matchId = crypto.randomUUID().replaceAll("-", "");
+    session.resultRecorded = false;
+  }
   session.state = next;
   session.revision += 1;
   session.updatedAt = nowIso();
+  if (previousPhase !== "finished" && next.phase === "finished") recordSessionCompletion(state, roomId, session);
   return { ok: true, message: next.message };
 }
 
