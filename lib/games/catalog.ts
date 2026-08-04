@@ -97,7 +97,7 @@ export const GAME_CATALOG: GameInfo[] = [
     id: "chess",
     name: "체스",
     shortName: "체스",
-    description: "가볍게 즐기는 캐주얼 체스",
+    description: "체크메이트와 캐슬링이 적용되는 정식 체스",
     minPlayers: 2,
     maxPlayers: 2,
     accent: "#94a3b8",
