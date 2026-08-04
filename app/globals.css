@@ -51,7 +51,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .icon-button { width: 44px; height: 44px; border: 0; border-radius: 14px; background: var(--panel-2); color: var(--blue-soft); display: grid; place-items: center; position: relative; font-size: 19px; }
 .icon-button b { position: absolute; right: -3px; top: -5px; min-width: 17px; height: 17px; border-radius: 999px; padding: 0 4px; background: var(--coral); color: white; font-size: 10px; line-height: 17px; }
 .icon-button.has-unread { color: white; box-shadow: 0 0 0 1px rgba(251,113,133,.65), 0 0 22px rgba(251,113,133,.2); }
-.chat-unread-dot { position: absolute; top: -4px; right: -4px; width: 14px; height: 14px; border: 3px solid #1c1f28; border-radius: 50%; background: var(--coral); box-shadow: 0 0 0 3px rgba(251,113,133,.15); animation: unread-pulse 1.2s ease-in-out infinite alternate; }
+.chat-unread-dot { position: absolute; top: -6px; right: -6px; z-index: 2; width: 17px; height: 17px; border: 3px solid #1c1f28; border-radius: 50%; background: #ff304f; box-shadow: 0 0 0 4px rgba(255,48,79,.18), 0 0 18px rgba(255,48,79,.75); animation: unread-pulse .82s ease-in-out infinite alternate; }
+.chat-unread-dot::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: white; opacity: .72; }
 .profile-button { height: 44px; display: flex; align-items: center; gap: 8px; max-width: 160px; padding: 4px 11px 4px 5px; border: 0; border-radius: 999px; background: var(--panel-2); color: white; }
 .profile-button span { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--blue); font-weight: 900; }
 .profile-button strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }

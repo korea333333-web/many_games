@@ -68,13 +68,17 @@ export function GamePlatform() {
   const pollInFlight = useRef(false);
   const pendingGameActions = useRef(0);
   const snapshotRef = useRef<Snapshot>(EMPTY_SNAPSHOT);
-  const latestMessageIdRef = useRef<number | null>(null);
+  const latestObservedMessageIdRef = useRef(0);
+  const lastReadMessageIdRef = useRef<number | null>(null);
   const chatOpenRef = useRef(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("game-lobby-identity");
     const value = stored ? JSON.parse(stored) as Identity : newIdentity();
     localStorage.setItem("game-lobby-identity", JSON.stringify(value));
+    const storedLastReadValue = localStorage.getItem(`game-lobby-chat-read:${value.id}`);
+    const storedLastRead = storedLastReadValue === null ? Number.NaN : Number(storedLastReadValue);
+    lastReadMessageIdRef.current = Number.isFinite(storedLastRead) && storedLastRead >= 0 ? storedLastRead : null;
     const storedRoom = localStorage.getItem("game-lobby-active-room");
     queueMicrotask(() => {
       setIdentity(value);
@@ -93,8 +97,14 @@ export function GamePlatform() {
     const previous = snapshotRef.current;
     const allMessages = [...data.globalMessages, ...data.directMessages];
     const newestMessageId = latestMessageId(allMessages);
-    if (!chatOpenRef.current && hasUnreadMessage(allMessages, latestMessageIdRef.current, identity.id)) setHasUnreadChat(true);
-    latestMessageIdRef.current = Math.max(latestMessageIdRef.current ?? 0, newestMessageId);
+    latestObservedMessageIdRef.current = Math.max(latestObservedMessageIdRef.current, newestMessageId);
+    if (lastReadMessageIdRef.current === null || chatOpenRef.current) {
+      lastReadMessageIdRef.current = newestMessageId;
+      localStorage.setItem(`game-lobby-chat-read:${identity.id}`, String(newestMessageId));
+      if (chatOpenRef.current) setHasUnreadChat(false);
+    } else if (hasUnreadMessage(allMessages, lastReadMessageIdRef.current, identity.id)) {
+      setHasUnreadChat(true);
+    }
     if (previous.activeRoom?.game && !data.activeRoom?.game && previous.activeRoom.game.phase !== "finished") {
       setNotice("필요한 인원이 나가 게임이 중단되었습니다. 대기방으로 돌아왔습니다.");
     }
@@ -187,9 +197,11 @@ export function GamePlatform() {
 
   const openChat = useCallback(() => {
     chatOpenRef.current = true;
+    lastReadMessageIdRef.current = latestObservedMessageIdRef.current;
+    if (identity) localStorage.setItem(`game-lobby-chat-read:${identity.id}`, String(latestObservedMessageIdRef.current));
     setHasUnreadChat(false);
     setChatOpen(true);
-  }, []);
+  }, [identity]);
 
   const closeChat = useCallback(() => {
     chatOpenRef.current = false;
