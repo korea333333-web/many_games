@@ -22,7 +22,7 @@ export type GameInfo = {
   icon: string;
 };
 
-export const GAME_CATALOG: GameInfo[] = [
+const ALL_GAMES: GameInfo[] = [
   {
     id: "gomoku",
     name: "오목",
@@ -135,6 +135,13 @@ export const GAME_CATALOG: GameInfo[] = [
   },
 ];
 
+// 끝말잇기는 충분한 사전 데이터를 준비한 뒤 다시 공개한다.
+export const GAME_CATALOG = ALL_GAMES.filter((game) => game.id !== "word-chain");
+
+export function isGameAvailable(gameId: string): gameId is GameId {
+  return GAME_CATALOG.some((game) => game.id === gameId);
+}
+
 export const GAME_BY_ID = Object.fromEntries(
-  GAME_CATALOG.map((game) => [game.id, game]),
+  ALL_GAMES.map((game) => [game.id, game]),
 ) as Record<GameId, GameInfo>;

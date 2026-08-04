@@ -1,4 +1,4 @@
-import { GAME_BY_ID, GAME_CATALOG, type GameId } from "../games/catalog.ts";
+import { GAME_BY_ID, GAME_CATALOG, isGameAvailable, type GameId } from "../games/catalog.ts";
 import {
   advanceTimedGame,
   createGame,
@@ -505,7 +505,7 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
 async function createRoom(state: PlatformState, hostId: string, payload: JsonRecord) {
   const gameId = String(payload.gameId ?? "") as GameId;
   const game = GAME_BY_ID[gameId];
-  if (!game) throw new Error("게임을 선택해 주세요.");
+  if (!game || !isGameAvailable(gameId)) throw new Error("현재 선택할 수 없는 게임입니다.");
   const id = crypto.randomUUID().replaceAll("-", "");
   const title = cleanText(payload.title, 30) || `${game.name} 같이 해요`;
   const password = cleanText(payload.password, 40);

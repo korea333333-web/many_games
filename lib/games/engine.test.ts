@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GAME_CATALOG } from "./catalog.ts";
+import { GAME_BY_ID, GAME_CATALOG, isGameAvailable } from "./catalog.ts";
 import { advanceTimedGame, createGame, getChessLegalTargets, getChessViewIndexes, projectGame, reduceGame, removePlayerFromGame } from "./engine.ts";
 import { WORD_CHAIN_WORDS } from "./word-bank.ts";
 import { hasUnreadMessage, latestMessageId } from "../chat/unread.ts";
@@ -12,11 +12,13 @@ const players = [
   { id: "d", name: "태오" },
 ];
 
-test("catalog keeps the selected eleven games", () => {
-  assert.equal(GAME_CATALOG.length, 11);
+test("catalog exposes ten games while keeping word chain dormant", () => {
+  assert.equal(GAME_CATALOG.length, 10);
   assert.deepEqual(GAME_CATALOG.map((game) => game.id), [
-    "gomoku", "word-chain", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "yut", "davinci-code",
+    "gomoku", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "yut", "davinci-code",
   ]);
+  assert.equal(isGameAvailable("word-chain"), false);
+  assert.equal(GAME_BY_ID["word-chain"].id, "word-chain");
 });
 
 test("word chain ships with a broad local fallback dictionary", () => {
