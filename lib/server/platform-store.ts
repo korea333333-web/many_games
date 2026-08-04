@@ -389,6 +389,7 @@ function makeRoomListItem(state: PlatformState, room: RoomRecord) {
 function makeSnapshot(state: PlatformState, playerId: string | null, roomId: string) {
   const now = Date.now();
   const rooms = Object.values(state.rooms)
+    .filter((room) => isGameAvailable(room.gameId))
     .sort((a, b) => {
       if (a.status !== b.status) return a.status === "waiting" ? -1 : 1;
       return b.updatedAt.localeCompare(a.updatedAt);
@@ -419,7 +420,7 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
 
   let activeRoom = null;
   const room = roomId ? state.rooms[roomId] : undefined;
-  if (room && playerId) {
+  if (room && isGameAvailable(room.gameId) && playerId) {
     const membership = roomMembers(state, roomId).find((member) => member.playerId === playerId);
     if (membership) {
       const members = roomMembers(state, roomId)
@@ -531,6 +532,7 @@ async function joinRoom(state: PlatformState, playerId: string, payload: JsonRec
   const roomId = cleanText(payload.roomId, 80);
   const room = state.rooms[roomId];
   if (!room) throw new Error("방을 찾을 수 없습니다.");
+  if (!isGameAvailable(room.gameId)) throw new Error("현재 이용할 수 없는 게임의 방입니다.");
   const existing = roomMembers(state, roomId).find((member) => member.playerId === playerId);
   if (!existing && roomMembers(state, roomId).length >= room.capacity) throw new Error("방이 가득 찼습니다.");
   if (room.passwordHash) {
@@ -557,6 +559,7 @@ function startGame(state: PlatformState, playerId: string, payload: JsonRecord) 
   const roomId = cleanText(payload.roomId, 80);
   const room = state.rooms[roomId];
   if (!room || room.hostId !== playerId) throw new Error("방장만 시작할 수 있습니다.");
+  if (!isGameAvailable(room.gameId)) throw new Error("현재 이용할 수 없는 게임입니다.");
   const members = roomMembers(state, roomId)
     .filter((member) => member.role === "player")
     .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
