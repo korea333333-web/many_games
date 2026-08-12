@@ -535,7 +535,7 @@ export function GamePlatform() {
         />
         <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} loggedIn={Boolean(authAccount)} onProfile={setProfileTargetId} />
         <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
-        {profileTarget && <PlayerProfileModal key={`${profileTarget.id}-${profileTarget.updatedAt}`} profile={profileTarget} isOwn={profileTarget.id === identity.id} identity={identity} account={profileTarget.id === identity.id ? authAccount : null} inventoryIds={profileTarget.id === identity.id ? snapshot.viewerInventoryIds : []} cosmetics={snapshot.cosmetics} loading={loading} authBusy={authBusy} onClose={() => setProfileTargetId(null)} onSaveNickname={saveNickname} onCommand={command} onGoogleSignIn={signInWithGoogle} onSignOut={signOut} />}
+        {profileTarget && <PlayerProfileModal key={profileTarget.id} profile={profileTarget} isOwn={profileTarget.id === identity.id} identity={identity} account={profileTarget.id === identity.id ? authAccount : null} inventoryIds={profileTarget.id === identity.id ? snapshot.viewerInventoryIds : []} cosmetics={snapshot.cosmetics} loading={loading} authBusy={authBusy} onClose={() => setProfileTargetId(null)} onSaveNickname={saveNickname} onCommand={command} onGoogleSignIn={signInWithGoogle} onSignOut={signOut} />}
         {adminOpen && <AdminModal role={snapshot.adminRole} loggedIn={Boolean(authAccount)} players={snapshot.moderationPlayers} feedback={snapshot.feedback} presence={snapshot.serverPresence} secondaryAdminCount={snapshot.secondaryAdminCount} command={command} onClose={() => setAdminOpen(false)} onLogin={signInWithGoogle} />}
         {feedbackOpen && <FeedbackModal command={command} previous={snapshot.feedback} onClose={() => setFeedbackOpen(false)} />}
         {unreadWarning && <WarningModal warning={unreadWarning} onAcknowledge={() => command("acknowledgeWarning", { warningId: unreadWarning.id })} />}
@@ -597,7 +597,7 @@ export function GamePlatform() {
       <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
       {rankingOpen && <LeaderboardModal entries={snapshot.leaderboard} identity={identity} loggedIn={Boolean(authAccount)} onClose={() => setRankingOpen(false)} onLogin={signInWithGoogle} onProfile={setProfileTargetId} />}
       {createOpen && <CreateRoomModal loading={loading} loggedIn={Boolean(authAccount)} onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) setCreateOpen(false); }} />}
-      {profileTarget && <PlayerProfileModal key={`${profileTarget.id}-${profileTarget.updatedAt}`} profile={profileTarget} isOwn={profileTarget.id === identity.id} identity={identity} account={profileTarget.id === identity.id ? authAccount : null} inventoryIds={profileTarget.id === identity.id ? snapshot.viewerInventoryIds : []} cosmetics={snapshot.cosmetics} loading={loading} authBusy={authBusy} onClose={() => setProfileTargetId(null)} onSaveNickname={saveNickname} onCommand={command} onGoogleSignIn={signInWithGoogle} onSignOut={signOut} />}
+      {profileTarget && <PlayerProfileModal key={profileTarget.id} profile={profileTarget} isOwn={profileTarget.id === identity.id} identity={identity} account={profileTarget.id === identity.id ? authAccount : null} inventoryIds={profileTarget.id === identity.id ? snapshot.viewerInventoryIds : []} cosmetics={snapshot.cosmetics} loading={loading} authBusy={authBusy} onClose={() => setProfileTargetId(null)} onSaveNickname={saveNickname} onCommand={command} onGoogleSignIn={signInWithGoogle} onSignOut={signOut} />}
       {adminOpen && <AdminModal role={snapshot.adminRole} loggedIn={Boolean(authAccount)} players={snapshot.moderationPlayers} feedback={snapshot.feedback} presence={snapshot.serverPresence} secondaryAdminCount={snapshot.secondaryAdminCount} command={command} onClose={() => setAdminOpen(false)} onLogin={signInWithGoogle} />}
       {feedbackOpen && <FeedbackModal command={command} previous={snapshot.feedback} onClose={() => setFeedbackOpen(false)} />}
       {unreadWarning && <WarningModal warning={unreadWarning} onAcknowledge={() => command("acknowledgeWarning", { warningId: unreadWarning.id })} />}
@@ -648,9 +648,21 @@ function PlayerProfileModal({ profile, isOwn, identity, account, inventoryIds, c
   const [nickname, setNickname] = useState(identity.nickname);
   const [statusMessage, setStatusMessage] = useState(profile.statusMessage);
   const [equipped, setEquipped] = useState(profile.equipped);
-  const badge = equippedItem(profile, cosmetics, "badge");
-  const trophy = equippedItem(profile, cosmetics, "trophy");
+  const previewProfile: PublicProfile = { ...profile, statusMessage, equipped };
+  const badge = equippedItem(previewProfile, cosmetics, "badge");
+  const trophy = equippedItem(previewProfile, cosmetics, "trophy");
   const winRate = profile.career.total.played ? Math.round(profile.career.total.wins / profile.career.total.played * 100) : 0;
+  const equipCosmetic = async (item: CosmeticItem) => {
+    const previous = equipped;
+    const next = { ...equipped, [item.kind]: item.id };
+    setEquipped(next);
+    const result = await onCommand("updateProfile", { statusMessage: profile.statusMessage, equipped: next });
+    if (!result) setEquipped(previous);
+  };
+  const purchaseCosmetic = async (item: CosmeticItem) => {
+    const result = await onCommand("purchaseCosmetic", { itemId: item.id });
+    if (result) setEquipped((value) => ({ ...value, [item.kind]: item.id }));
+  };
   const saveProfile = async () => {
     if (nickname.trim() !== identity.nickname) await onSaveNickname(nickname);
     if (account) await onCommand("updateProfile", { statusMessage, equipped });
@@ -659,9 +671,9 @@ function PlayerProfileModal({ profile, isOwn, identity, account, inventoryIds, c
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal-card profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
         <div className="modal-head"><div><span className="eyebrow">PLAYER CARD</span><h2 id="profile-title">플레이어 프로필</h2></div><button type="button" onClick={onClose} aria-label="닫기">×</button></div>
-        <div className="profile-hero" style={profileBackground(profile)}>
+        <div className="profile-hero" style={profileBackground(previewProfile)}>
           <div className="profile-avatar-xl"><ProfileAvatar nickname={profile.nickname} avatarUrl={isOwn ? account?.avatarUrl : null} />{badge && <span title={badge.name}>{badge.icon}</span>}</div>
-          <div><div className="profile-name"><strong>{profile.nickname}</strong><AdminBadge role={profile.adminRole} /></div><p>{profile.statusMessage || "아직 상태 메시지가 없어요."}</p><small>가입 {new Date(profile.createdAt).toLocaleDateString("ko-KR")}</small></div>
+          <div><div className="profile-name"><strong>{profile.nickname}</strong><AdminBadge role={profile.adminRole} /></div><p>{statusMessage || "아직 상태 메시지가 없어요."}</p><small>가입 {new Date(profile.createdAt).toLocaleDateString("ko-KR")}</small></div>
           {trophy && <b className="profile-trophy" title={trophy.name}>{trophy.icon}</b>}
         </div>
         <div className="profile-career"><div><strong>{profile.career.total.played}</strong><span>총 경기</span></div><div><strong>{profile.career.total.wins}</strong><span>승리</span></div><div><strong>{winRate}%</strong><span>승률</span></div><div><strong>{profile.infiniteCoins ? "∞" : profile.coins}</strong><span>코인</span></div></div>
@@ -672,8 +684,8 @@ function PlayerProfileModal({ profile, isOwn, identity, account, inventoryIds, c
           <label>상태 메시지<input value={statusMessage} onChange={(event) => setStatusMessage(event.target.value)} maxLength={60} placeholder="지금 내 상태를 한 줄로 알려주세요" disabled={!account} /></label>
           {!account && <p className="modal-note">로그인하면 승리할 때마다 30코인을 받고 프로필을 꾸밀 수 있어요.</p>}
         </>}
-        {isOwn && account && tab === "closet" && <div className="cosmetic-grid">{cosmetics.filter((item) => inventoryIds.includes(item.id)).map((item) => <button key={item.id} className={equipped[item.kind] === item.id ? "cosmetic-card equipped" : "cosmetic-card"} onClick={() => setEquipped((value) => ({ ...value, [item.kind]: item.id }))}><span style={{ color: item.accent }}>{item.icon}</span><strong>{item.name}</strong><small>{item.kind === "badge" ? "배지" : item.kind === "trophy" ? "트로피" : "배경"}</small></button>)}</div>}
-        {isOwn && account && tab === "shop" && <><p className="coin-guide">🪙 보유 코인 <strong>{profile.infiniteCoins ? "∞" : profile.coins}</strong> · {profile.infiniteCoins ? "최고 관리자는 코인이 차감되지 않습니다" : "게임에서 이기면 30코인"}</p><div className="cosmetic-grid shop">{cosmetics.filter((item) => item.price > 0).map((item) => { const owned = inventoryIds.includes(item.id); return <button key={item.id} className={owned ? "cosmetic-card owned" : "cosmetic-card"} disabled={owned || (!profile.infiniteCoins && profile.coins < item.price)} onClick={() => onCommand("purchaseCosmetic", { itemId: item.id })}><span style={{ color: item.accent }}>{item.icon}</span><strong>{item.name}</strong><small>{owned ? "보유 중" : profile.infiniteCoins ? "🪙 무료" : `🪙 ${item.price}`}</small></button>; })}</div></>}
+        {isOwn && account && tab === "closet" && <><p className="closet-guide">아이템을 누르면 바로 장착되고 자동 저장됩니다.</p><div className="cosmetic-grid">{cosmetics.filter((item) => inventoryIds.includes(item.id)).map((item) => <button key={item.id} className={equipped[item.kind] === item.id ? "cosmetic-card equipped" : "cosmetic-card"} disabled={loading} onClick={() => void equipCosmetic(item)}><span style={{ color: item.accent }}>{item.icon}</span><strong>{item.name}</strong><small>{equipped[item.kind] === item.id ? "장착 중" : item.kind === "badge" ? "배지" : item.kind === "trophy" ? "트로피" : "배경"}</small></button>)}</div></>}
+        {isOwn && account && tab === "shop" && <><p className="coin-guide">🪙 보유 코인 <strong>{profile.infiniteCoins ? "∞" : profile.coins}</strong> · {profile.infiniteCoins ? "최고 관리자는 코인이 차감되지 않습니다" : "게임에서 이기면 30코인"}</p><div className="cosmetic-grid shop">{cosmetics.filter((item) => item.price > 0).map((item) => { const owned = inventoryIds.includes(item.id); return <button key={item.id} className={owned ? "cosmetic-card owned" : "cosmetic-card"} disabled={loading || owned || (!profile.infiniteCoins && profile.coins < item.price)} onClick={() => void purchaseCosmetic(item)}><span style={{ color: item.accent }}>{item.icon}</span><strong>{item.name}</strong><small>{owned ? "보유 중" : profile.infiniteCoins ? "🪙 무료" : `🪙 ${item.price}`}</small></button>; })}</div></>}
         {!isOwn && <div className="game-record-list">{Object.entries(profile.career.games).map(([gameId, record]) => <div key={gameId}><span>{GAME_BY_ID[gameId as GameId].name}</span><strong>{record.wins}승 {record.draws}무 {record.losses}패</strong></div>)}{!Object.keys(profile.career.games).length && <p>아직 완료한 게임이 없어요.</p>}</div>}
         <div className="modal-actions profile-actions">{isOwn && account && <button type="button" className="text-button danger" onClick={onSignOut} disabled={authBusy}>로그아웃</button>}<span /><button type="button" className="secondary-button" onClick={onClose}>닫기</button>{isOwn && <button type="button" className="primary-button" onClick={saveProfile} disabled={loading || !nickname.trim()}>저장</button>}</div>
       </section>
