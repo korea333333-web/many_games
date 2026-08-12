@@ -266,7 +266,9 @@ function parseSettings(value: unknown): RoomSettings {
     const raw = typeof value === "string" ? JSON.parse(value) : value;
     const rounds = Number((raw as { rounds?: unknown } | null)?.rounds);
     const ranked = (raw as { ranked?: unknown } | null)?.ranked === true;
-    return { ...(ALLOWED_ROUND_COUNTS.has(rounds) ? { rounds } : {}), ...(ranked ? { ranked: true } : {}) };
+    const rawDifficulty = String((raw as { difficulty?: unknown } | null)?.difficulty ?? "");
+    const difficulty = rawDifficulty === "medium" || rawDifficulty === "hard" ? rawDifficulty : rawDifficulty === "easy" ? "easy" : undefined;
+    return { ...(ALLOWED_ROUND_COUNTS.has(rounds) ? { rounds } : {}), ...(difficulty ? { difficulty } : {}), ...(ranked ? { ranked: true } : {}) };
   } catch {
     return {};
   }
@@ -275,6 +277,7 @@ function parseSettings(value: unknown): RoomSettings {
 function sanitizeSettings(gameId: GameId, value: unknown): RoomSettings {
   const parsed = parseSettings(value);
   const ranked = isRankedGame(gameId) && parsed.ranked === true;
+  if (gameId === "word-defense") return { difficulty: parsed.difficulty ?? "easy" };
   if (!ROUND_GAMES.has(gameId)) return ranked ? { ranked: true } : {};
   const rounds = gameId === "same-answer" ? (parsed.rounds === 10 ? 10 : 5) : (parsed.rounds ?? 5);
   return { rounds, ...(ranked ? { ranked: true } : {}) };
@@ -451,6 +454,8 @@ function runMaintenance(state: PlatformState, now = Date.now()) {
       ? CHESS_FINISHED_RETURN_DELAY_MS
       : session.state.gameId === "go"
         ? GO_FINISHED_RETURN_DELAY_MS
+        : session.state.gameId === "word-defense"
+          ? 8_000
         : FINISHED_RETURN_DELAY_MS;
     if (session.state.phase !== "finished" || now - Date.parse(session.updatedAt) < returnDelay) continue;
     const room = state.rooms[roomId];
@@ -514,6 +519,20 @@ function recordSessionCompletion(state: PlatformState, roomId: string, session: 
   if (session.state.phase !== "finished" || session.resultRecorded) return false;
   const room = state.rooms[roomId];
   const matchId = session.matchId ?? crypto.randomUUID().replaceAll("-", "");
+  if (session.state.gameId === "word-defense") {
+    const rewards = asRecord(session.state.state.goldRewards);
+    for (const player of session.state.players) {
+      const profile = ensureProfile(state, player.id);
+      const reward = Math.max(0, Math.floor(Number(rewards[player.id]) || 0));
+      if (profile && reward) {
+        profile.coins = Math.min(Number.MAX_SAFE_INTEGER, profile.coins + reward);
+        profile.updatedAt = session.updatedAt;
+      }
+    }
+    session.matchId = matchId;
+    session.resultRecorded = true;
+    return true;
+  }
   const recorded = recordCompletedMatch(state.rankings, {
     matchId,
     gameId: session.state.gameId,

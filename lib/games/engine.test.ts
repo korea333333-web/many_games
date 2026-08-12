@@ -12,15 +12,18 @@ const players = [
   { id: "d", name: "태오" },
 ];
 
-test("catalog exposes ten games while keeping postponed games dormant", () => {
-  assert.equal(GAME_CATALOG.length, 10);
+test("catalog exposes twelve games while keeping postponed games dormant", () => {
+  assert.equal(GAME_CATALOG.length, 12);
   assert.deepEqual(GAME_CATALOG.map((game) => game.id), [
-    "gomoku", "go", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "davinci-code",
+    "gomoku", "go", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "davinci-code", "rummikub", "word-defense",
   ]);
   assert.equal(isGameAvailable("word-chain"), false);
   assert.equal(isGameAvailable("yut"), false);
   assert.equal(GAME_BY_ID["word-chain"].id, "word-chain");
   assert.equal(GAME_BY_ID.yut.id, "yut");
+  assert.equal(GAME_BY_ID.drawing.minPlayers, 3);
+  assert.deepEqual([GAME_BY_ID.rummikub.minPlayers, GAME_BY_ID.rummikub.maxPlayers], [2, 4]);
+  assert.deepEqual([GAME_BY_ID["word-defense"].minPlayers, GAME_BY_ID["word-defense"].maxPlayers], [2, 8]);
 });
 
 test("word chain ships with a broad local fallback dictionary", () => {
@@ -574,6 +577,86 @@ test("davinci code announces three, four and five correct guesses as combos", ()
   game = reduceGame(game, { type: "END_TURN", playerId: "a" });
   assert.equal(game.state.comboCount, 0);
   assert.equal(game.state.comboEvent, null);
+});
+
+test("rummikub deals fourteen tiles and hides opponents racks", () => {
+  const game = createGame("rummikub", players.slice(0, 2), 500);
+  assert.equal(game.state.racks.a.length, 14);
+  assert.equal(game.state.racks.b.length, 14);
+  assert.equal(game.state.pool.length, 78);
+  const projected = projectGame(game, "a");
+  assert.ok(projected.state.racks.a.every(Boolean));
+  assert.ok(projected.state.racks.b.every((tile: unknown) => tile === null));
+  assert.ok(projected.state.pool.every((tile: unknown) => tile === null));
+});
+
+test("rummikub enforces the initial thirty points and valid groups", () => {
+  let game = createGame("rummikub", players.slice(0, 2), 501);
+  const lowRun = [7, 8, 9].map((number) => ({ id: `low-${number}`, color: "red", number, isJoker: false }));
+  game.state.racks.a = [...lowRun, { id: "spare", color: "black", number: 1, isJoker: false }];
+  game.state.turnSnapshot = { playerId: "a", rack: structuredClone(game.state.racks.a), table: [], addedTileIds: [], manipulatedTable: false };
+  game = reduceGame(game, { type: "PLAY_TILES", playerId: "a", payload: { tileIds: lowRun.map((tile) => tile.id), targetMeldIndex: -1 } });
+  game = reduceGame(game, { type: "COMMIT_TURN", playerId: "a" });
+  assert.match(game.message, /24점/);
+  assert.equal(game.turn, 0);
+  game = reduceGame(game, { type: "UNDO_TURN", playerId: "a" });
+
+  const group = ["red", "blue", "yellow"].map((color) => ({ id: `ten-${color}`, color, number: 10, isJoker: false }));
+  game.state.racks.a = [...group, { id: "spare", color: "black", number: 1, isJoker: false }];
+  game.state.turnSnapshot = { playerId: "a", rack: structuredClone(game.state.racks.a), table: [], addedTileIds: [], manipulatedTable: false };
+  game = reduceGame(game, { type: "PLAY_TILES", playerId: "a", payload: { tileIds: group.map((tile) => tile.id), targetMeldIndex: -1 } });
+  game = reduceGame(game, { type: "COMMIT_TURN", playerId: "a" });
+  assert.equal(game.state.opened.a, true);
+  assert.equal(game.turn, 1);
+});
+
+test("rummikub can rearrange table tiles but rejects an incomplete table", () => {
+  let game = createGame("rummikub", players.slice(0, 2), 502);
+  game.state.opened.a = true;
+  game.state.table = [[7, 8, 9].map((number) => ({ id: `red-${number}`, color: "red", number, isJoker: false }))];
+  game.state.racks.a = [{ id: "blue-9", color: "blue", number: 9, isJoker: false }];
+  game.state.turnSnapshot = { playerId: "a", rack: structuredClone(game.state.racks.a), table: structuredClone(game.state.table), addedTileIds: [], manipulatedTable: false };
+  game = reduceGame(game, { type: "PLAY_TILES", playerId: "a", payload: { tileIds: ["blue-9"], targetMeldIndex: -1 } });
+  game = reduceGame(game, { type: "MOVE_TABLE_TILE", playerId: "a", payload: { fromMeldIndex: 0, tileId: "red-9", targetMeldIndex: 1 } });
+  const rejected = reduceGame(game, { type: "COMMIT_TURN", playerId: "a" });
+  assert.match(rejected.message, /조합이 완성되지/);
+  const restored = reduceGame(rejected, { type: "UNDO_TURN", playerId: "a" });
+  assert.equal(restored.state.table.length, 1);
+  assert.equal(restored.state.racks.a.length, 1);
+});
+
+test("word defense spawns enemies, charges BOOM every twenty direct kills and removes a wave", () => {
+  let game = createGame("word-defense", players.slice(0, 2), 1_000, { difficulty: "medium" });
+  game = advanceTimedGame(game, 2_300);
+  assert.ok(game.state.enemies.length >= 1);
+  const firstWord = game.state.enemies[0].word;
+  game.state.typedKills.a = 19;
+  game = reduceGame(game, { type: "TYPE_WORD", playerId: "a", payload: { word: firstWord }, now: 2_301 });
+  assert.equal(game.state.typedKills.a, 20);
+  assert.equal(game.state.boomCharges.a, 1);
+  game.state.enemies = Array.from({ length: 8 }, (_, index) => ({ id: `boom-${index}`, word: `word${index}`, lane: index % 7, spawnedAt: 1_000, fallDurationMs: 20_000 }));
+  game = reduceGame(game, { type: "TYPE_WORD", playerId: "a", payload: { word: "boom!" }, now: 2_400 });
+  assert.equal(game.state.boomCharges.a, 0);
+  assert.ok(game.state.enemies.length <= 3);
+  assert.equal(game.state.lastEvent.type, "boom");
+});
+
+test("word defense lasts three minutes, spawns the configured boss and calculates capped cooperative rewards", () => {
+  let game = createGame("word-defense", players.slice(0, 2), 10_000, { difficulty: "hard" });
+  game.state.baseHp = 1_000;
+  game.state.maxBaseHp = 1_000;
+  game = advanceTimedGame(game, 130_000);
+  assert.equal(game.state.boss.maxHp, 200);
+  game.state.baseHp = game.state.maxBaseHp;
+  game.state.enemies = [];
+  game.state.nextSpawnAt = 190_001;
+  game.state.typedKills.a = 500;
+  game.state.bossDefeated = true;
+  game = advanceTimedGame(game, 190_000);
+  assert.equal(game.phase, "finished");
+  assert.deepEqual(game.winnerIds, ["a", "b"]);
+  assert.equal(game.state.goldRewards.a, 220);
+  assert.ok(game.state.goldRewards.b > 0);
 });
 
 test("a multiplayer game keeps running when enough players remain", () => {

@@ -96,3 +96,24 @@ export const LIAR_WORDS = [
   "놀이공원", "치킨", "고양이", "학교", "바다", "편의점", "수박", "영화관",
   "캠핑", "축구", "스마트폰", "비행기", "겨울", "생일", "라면", "동물원",
 ] as const;
+
+// 키보드 디펜스는 시간이 흐를수록 짧은 단어 → 긴 단어 → 한·영 혼합어 순으로 출현한다.
+// 공백 없이 바로 입력할 수 있는 단어만 사용해 모바일과 PC의 판정 차이를 없앴다.
+export const DEFENSE_WORDS = {
+  short: [
+    "별", "달", "빛", "꿈", "불", "물", "숲", "돌", "눈", "비", "봄", "밤", "길", "집", "문", "책",
+    "cat", "dog", "sun", "moon", "star", "blue", "game", "jump", "fire", "wind", "tree", "hope", "play", "team", "fast", "safe",
+  ],
+  medium: [
+    "고양이", "강아지", "무지개", "자전거", "보물상자", "우주선", "번개", "도서관", "운동장", "초콜릿", "해바라기", "놀이공원",
+    "keyboard", "defense", "monster", "rocket", "rainbow", "together", "victory", "planet", "diamond", "typing", "energy", "guardian",
+  ],
+  long: [
+    "은하수탐험대", "반짝이는유성", "비밀의보물지도", "천둥번개수호자", "마지막방어선", "초고속키보드", "용감한모험가", "끝없는우주여행",
+    "cooperative", "constellation", "thunderstorm", "unbreakable", "adventuretime", "keyboardmaster", "galaxydefender", "finalguardian",
+  ],
+  mixed: [
+    "blue하늘", "star별빛", "game친구", "super방어", "rocket발사", "typing고수", "무지개rainbow", "함께together",
+    "보스boss", "energy충전", "final전투", "keyboard수호대", "galaxy모험", "victory승리", "thunder번개", "team플레이",
+  ],
+} as const;

@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
   openGraph: {
     title: "게임 로비",
-    description: "방을 만들고 친구들과 열 가지 미니게임을 즐겨보세요.",
+    description: "방을 만들고 친구들과 열두 가지 미니게임을 즐겨보세요.",
     type: "website",
     locale: "ko_KR",
     images: [{ url: "/og.png", width: 1536, height: 1024, alt: "여러 미니게임을 함께 즐기는 게임 로비" }],

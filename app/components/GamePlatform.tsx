@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { RealtimeChannel, SupabaseClient, User } from "@supabase/supabase-js";
 import { GAME_BY_ID, GAME_CATALOG, type GameId, type GameInfo } from "@/lib/games/catalog";
-import type { GameCommand, GameEnvelope } from "@/lib/games/engine";
+import type { DefenseDifficulty, GameCommand, GameEnvelope } from "@/lib/games/engine";
 import { hasUnreadMessage, latestMessageId } from "@/lib/chat/unread";
 import { getSupabaseBrowserClient } from "@/lib/supabase/realtime-client";
 import { isRankedGame, rankTier, RANKED_GAME_IDS, type LeaderboardEntry, type RankedGameId } from "@/lib/rankings";
@@ -20,7 +20,7 @@ type RoomListItem = {
   status: "waiting" | "playing"; capacity: number; locked: boolean; memberCount: number; playerCount: number;
   onlineCount: number; persistent: boolean; reservedForViewer: boolean; participantLocked: boolean;
   lastActiveAt: string; expiresAt?: string | null;
-  settings: { rounds?: number; ranked?: boolean };
+  settings: { rounds?: number; ranked?: boolean; difficulty?: DefenseDifficulty };
 };
 type Member = { id: string; name: string; role: "player" | "spectator"; joinedAt: string; online?: boolean; adminRole: AdminRole };
 type ActiveRoom = RoomListItem & { members: Member[]; viewerRole: string; game: GameEnvelope | null; revision: number };
@@ -61,7 +61,7 @@ type Snapshot = {
 };
 
 const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], directContacts: [], pinnedDirectIds: [], globalMessages: [], directMessages: [], activeRoom: null, leaderboard: [], playerDirectory: [], viewerProfile: null, viewerInventoryIds: [], cosmetics: [], adminRole: null, viewerWarnings: [], ban: null, moderationPlayers: [], feedback: [], announcement: null, serverPresence: [], secondaryAdminCount: 0 };
-const TIMED_GAME_IDS = new Set<GameId>(["word-chain", "drawing", "chosung", "same-answer"]);
+const TIMED_GAME_IDS = new Set<GameId>(["word-chain", "drawing", "chosung", "same-answer", "word-defense"]);
 const ACTION_LOADING_LABELS: Record<string, string> = {
   createRoom: "새 방을 만들고 있어요",
   joinRoom: "방에 들어가는 중이에요",
@@ -771,6 +771,7 @@ function CreateRoomModal({ loading, loggedIn, onClose, onCreate }: { loading: bo
   const [title, setTitle] = useState("");
   const [password, setPassword] = useState("");
   const [rounds, setRounds] = useState(5);
+  const [difficulty, setDifficulty] = useState<DefenseDifficulty>("easy");
   const [ranked, setRanked] = useState(false);
   const game = GAME_BY_ID[gameId];
   const supportsRounds = gameId === "drawing" || gameId === "chosung" || gameId === "same-answer";
@@ -785,10 +786,11 @@ function CreateRoomModal({ loading, loggedIn, onClose, onCreate }: { loading: bo
         <div className="selected-game"><span style={{ background: game.accent }}>{game.icon}</span><div><strong>{game.name}</strong><p>{game.description} · 예상 {game.playTime}</p></div></div>
         {supportsRanked && <button type="button" className={ranked ? "ranked-mode-card selected" : "ranked-mode-card"} disabled={!loggedIn} onClick={() => { setRanked((value) => !value); setPassword(""); }}><span>♛</span><div><strong>랭크전 {ranked ? "ON" : "OFF"}</strong><small>{loggedIn ? "완료된 경기의 승패와 RP가 기록됩니다." : "Google 로그인 후 선택할 수 있습니다."}</small></div><i>{ranked ? "선택됨" : "선택"}</i></button>}
         {supportsRounds && <label>라운드 수<select value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{roundOptions.map((count) => <option key={count} value={count}>{count}라운드</option>)}</select></label>}
+        {gameId === "word-defense" && <label>난이도<select value={difficulty} onChange={(event) => setDifficulty(event.target.value as DefenseDifficulty)}><option value="easy">EASY · 여유로운 입문</option><option value="medium">MEDIUM · 빠른 협동</option><option value="hard">HARD · 극한 타이핑</option></select></label>}
         <label>방 제목<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={30} placeholder={`${game.name} 같이 해요`} /></label>
         <label>비밀번호 <small>{ranked ? "랭크전은 공개방" : "선택"}</small><input value={password} onChange={(event) => setPassword(event.target.value)} disabled={ranked} maxLength={40} type="password" placeholder={ranked ? "랭크전에서는 사용할 수 없어요" : "비워두면 공개 방"} /></label>
-        <p className="modal-note">{requiresLogin ? loggedIn ? "바둑판과 참가자 2명이 서버에 저장됩니다. 두 사람 모두 나간 뒤 24시간 동안 돌아오지 않으면 방이 삭제됩니다." : "바둑 이어두기 방은 Google 로그인이 필요합니다." : ranked ? "로그인한 플레이어 2명이 참가해야 시작할 수 있으며, 중단된 경기는 기록되지 않습니다." : "방에는 최대 10명까지 들어올 수 있으며, 남는 인원은 관전합니다."}</p>
-        <div className="modal-actions"><button className="secondary-button" onClick={onClose} disabled={loading}>취소</button><button className="primary-button" disabled={loading || (requiresLogin && !loggedIn)} onClick={() => onCreate({ gameId, title, password, settings: { ...(supportsRounds ? { rounds } : {}), ...(ranked ? { ranked: true } : {}) } })}>{loading ? "만드는 중…" : requiresLogin && !loggedIn ? "로그인 필요" : ranked ? "랭크방 만들기" : "방 만들기"}</button></div>
+        <p className="modal-note">{requiresLogin ? loggedIn ? "바둑판과 참가자 2명이 서버에 저장됩니다. 두 사람 모두 나간 뒤 24시간 동안 돌아오지 않으면 방이 삭제됩니다." : "바둑 이어두기 방은 Google 로그인이 필요합니다." : gameId === "word-defense" ? "협동전은 승리 횟수와 랭킹에 반영되지 않습니다. 생존·처치·보스 보상 골드는 로그인 계정에만 지급됩니다." : ranked ? "로그인한 플레이어 2명이 참가해야 시작할 수 있으며, 중단된 경기는 기록되지 않습니다." : "방에는 최대 10명까지 들어올 수 있으며, 남는 인원은 관전합니다."}</p>
+        <div className="modal-actions"><button className="secondary-button" onClick={onClose} disabled={loading}>취소</button><button className="primary-button" disabled={loading || (requiresLogin && !loggedIn)} onClick={() => onCreate({ gameId, title, password, settings: { ...(supportsRounds ? { rounds } : {}), ...(gameId === "word-defense" ? { difficulty } : {}), ...(ranked ? { ranked: true } : {}) } })}>{loading ? "만드는 중…" : requiresLogin && !loggedIn ? "로그인 필요" : ranked ? "랭크방 만들기" : "방 만들기"}</button></div>
       </div>
     </div>
   );
@@ -823,7 +825,7 @@ function RoomView({ room, identity, loading, syncing, onLeave, onStart, onAction
           {!room.game && !canStart && <p className="waiting-copy">방장이 게임을 준비하고 있어요.</p>}
         </aside>
         <section className="game-panel">
-          {room.game ? <GameStage game={room.game} revision={room.revision} playerId={identity.id} viewerRole={room.viewerRole} onAction={onAction} /> : <div className="game-waiting"><div className="big-game-icon" style={{ background: gameInfo.accent }}>{gameInfo.icon}</div><span className="eyebrow">{room.settings.ranked ? "♛ 랭크전 · 로그인 2명" : playerCountLabel(gameInfo)} · 예상 {gameInfo.playTime}{room.settings.rounds ? ` · ${room.settings.rounds}라운드` : ""}</span><h2>{gameInfo.name}</h2><p>{room.settings.ranked ? "승리하면 RP가 오르고 패배하면 내려갑니다. 중단 경기는 기록되지 않습니다." : gameInfo.description}</p><button className="waiting-rules" onClick={onRules}>▥ 규칙 먼저 보기</button></div>}
+          {room.game ? <GameStage game={room.game} revision={room.revision} playerId={identity.id} viewerRole={room.viewerRole} onAction={onAction} /> : <div className="game-waiting"><div className="big-game-icon" style={{ background: gameInfo.accent }}>{gameInfo.icon}</div><span className="eyebrow">{room.settings.ranked ? "♛ 랭크전 · 로그인 2명" : playerCountLabel(gameInfo)} · 예상 {gameInfo.playTime}{room.settings.rounds ? ` · ${room.settings.rounds}라운드` : ""}{room.settings.difficulty ? ` · ${room.settings.difficulty.toUpperCase()}` : ""}</span><h2>{gameInfo.name}</h2><p>{room.settings.ranked ? "승리하면 RP가 오르고 패배하면 내려갑니다. 중단 경기는 기록되지 않습니다." : gameInfo.description}</p>{room.gameId === "word-defense" && <strong className="coop-no-rank">협동전 · 승리 횟수와 랭킹 미반영</strong>}<button className="waiting-rules" onClick={onRules}>▥ 규칙 먼저 보기</button></div>}
         </section>
       </main>
     </div>

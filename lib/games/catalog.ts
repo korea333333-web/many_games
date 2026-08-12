@@ -10,7 +10,9 @@ export type GameId =
   | "chess"
   | "uno"
   | "yut"
-  | "davinci-code";
+  | "davinci-code"
+  | "rummikub"
+  | "word-defense";
 
 export type GameInfo = {
   id: GameId;
@@ -63,7 +65,7 @@ const ALL_GAMES: GameInfo[] = [
     name: "그림 맞히기",
     shortName: "그림",
     description: "그림을 그리고 가장 먼저 정답 맞히기",
-    minPlayers: 2,
+    minPlayers: 3,
     maxPlayers: 10,
     playTime: "5~15분",
     accent: "#fb7185",
@@ -156,6 +158,28 @@ const ALL_GAMES: GameInfo[] = [
     playTime: "5~20분",
     accent: "#94a3b8",
     icon: "◆7",
+  },
+  {
+    id: "rummikub",
+    name: "루미큐브",
+    shortName: "루미큐브",
+    description: "숫자 타일을 조합하고 재배치해 내 패를 먼저 비우기",
+    minPlayers: 2,
+    maxPlayers: 4,
+    playTime: "20~45분",
+    accent: "#14b8a6",
+    icon: "7·8·9",
+  },
+  {
+    id: "word-defense",
+    name: "협동 키보드 디펜스",
+    shortName: "키보드 디펜스",
+    description: "떨어지는 단어를 함께 입력해 3분 동안 기지를 방어",
+    minPlayers: 2,
+    maxPlayers: 8,
+    playTime: "3분",
+    accent: "#8b5cf6",
+    icon: "⌨⚡",
   },
 ];
 

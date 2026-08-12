@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { getChessLegalTargets, getChessViewIndexes, reduceGame, type DavinciTile, type GameCommand, type GameEnvelope, type UnoCard, type UnoColor } from "@/lib/games/engine";
 import { GAME_BY_ID, type GameId } from "@/lib/games/catalog";
+import { RummikubGame } from "./RummikubGame";
+import { WordDefenseGame } from "./WordDefenseGame";
 
 type Props = {
   game: GameEnvelope;
@@ -55,10 +57,12 @@ export function GameStage({ game, revision, playerId, viewerRole, onAction }: Pr
         {shownGame.gameId === "uno" && <Uno game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
         {shownGame.gameId === "yut" && <Yut game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
         {shownGame.gameId === "davinci-code" && <DavinciCode game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "rummikub" && <RummikubGame game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "word-defense" && <WordDefenseGame game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
       </div>
       {shownGame.gameId === "davinci-code" && shownGame.state.comboEvent && <DavinciComboEffect game={shownGame} />}
       {shownGame.feedback && <AnswerFeedback game={shownGame} playerId={playerId} />}
-      {shownGame.phase === "finished" && !inspectingFinalResult && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} onInspectResult={hasInspectibleResult ? () => setInspectedResultSeed(shownGame.seed) : undefined} />}
+      {shownGame.phase === "finished" && !inspectingFinalResult && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} reward={shownGame.gameId === "word-defense" ? Number(shownGame.state.goldRewards?.[playerId] ?? 0) : undefined} onInspectResult={hasInspectibleResult ? () => setInspectedResultSeed(shownGame.seed) : undefined} />}
       {inspectingFinalResult && (
         <div className="chess-final-board-banner" role="status">
           <div>
@@ -117,10 +121,13 @@ const VICTORY_THEMES: Record<GameId, { kicker: string; icon: string }> = {
   uno: { kicker: "UNO!", icon: "U" },
   yut: { kicker: "ALL PIECES HOME", icon: "윷" },
   "davinci-code": { kicker: "CODE CRACKED", icon: "#" },
+  rummikub: { kicker: "RUMMIKUB!", icon: "7" },
+  "word-defense": { kicker: "BASE DEFENDED", icon: "⌨" },
 };
 
-function VictoryOverlay({ gameId, winners, message, onInspectResult }: { gameId: GameId; winners: string[]; message: string; onInspectResult?: () => void }) {
-  const title = winners.length ? `${winners.join(", ")} 승리!` : "무승부!";
+function VictoryOverlay({ gameId, winners, message, reward, onInspectResult }: { gameId: GameId; winners: string[]; message: string; reward?: number; onInspectResult?: () => void }) {
+  const cooperative = gameId === "word-defense";
+  const title = cooperative ? winners.length ? "3분 방어 성공!" : "방어 실패" : winners.length ? `${winners.join(", ")} 승리!` : "무승부!";
   const theme = VICTORY_THEMES[gameId];
   const inspection = gameId === "go" ? { icon: "◉", label: "마지막 판 보기" } : gameId === "chess" ? { icon: "♟", label: "마지막 판 보기" } : gameId === "uno" ? { icon: "U", label: "마지막 패 보기" } : { icon: "#", label: "마지막 패 보기" };
   return (
@@ -128,10 +135,11 @@ function VictoryOverlay({ gameId, winners, message, onInspectResult }: { gameId:
       <div className="victory-particles" aria-hidden="true">{Array.from({ length: 16 }, (_, index) => <i key={index} />)}</div>
       <div className={`victory-card theme-${gameId}`}>
         <VictoryScene gameId={gameId} />
-        <span className="victory-trophy" aria-hidden="true">{winners.length ? theme.icon : "◆"}</span>
-        <span className="eyebrow">{winners.length ? theme.kicker : "DRAW GAME"}</span>
+        <span className="victory-trophy" aria-hidden="true">{winners.length ? theme.icon : cooperative ? "⚠" : "◆"}</span>
+        <span className="eyebrow">{winners.length ? theme.kicker : cooperative ? "BASE BREACHED" : "DRAW GAME"}</span>
         <h2>{title}</h2>
         <p>{message}</p>
+        {cooperative && <div className="victory-coop-reward"><strong>🪙 +{reward ?? 0}</strong><span>로그인 계정 지급 · 전적/랭킹 미반영</span></div>}
         {onInspectResult && <button className="victory-board-button" type="button" onClick={onInspectResult}>{inspection.icon} {inspection.label}</button>}
         <small>{onInspectResult ? "마지막 상태를 확인한 뒤 같은 방으로 돌아갑니다." : "잠시 후 같은 방의 대기 화면으로 돌아갑니다."}</small>
       </div>
@@ -151,6 +159,8 @@ function VictoryScene({ gameId }: { gameId: GameId }) {
   if (gameId === "liar") return <div className="victory-scene mask" aria-hidden="true"><i>◐</i><b>?</b><i>◑</i></div>;
   if (gameId === "uno") return <div className="victory-scene card-fan" aria-hidden="true"><i>7</i><i>↻</i><i>+4</i><i>W</i></div>;
   if (gameId === "yut") return <div className="victory-scene yut-sticks-win" aria-hidden="true"><i /><i /><i /><i /></div>;
+  if (gameId === "rummikub") return <div className="victory-scene code-tiles rummikub-win" aria-hidden="true"><i>7</i><i>8</i><b>9</b><i>★</i></div>;
+  if (gameId === "word-defense") return <div className="victory-scene defense-win" aria-hidden="true"><i>⌨</i><b>BOOM!</b><i>⚡</i></div>;
   return <div className="victory-scene code-tiles" aria-hidden="true"><i>2</i><i>4</i><b>?</b><i>9</i></div>;
 }
 
@@ -402,15 +412,19 @@ function Drawing({ game, playerId, disabled, onAction }: GameViewProps) {
   const isDrawer = game.players[game.state.drawerIndex]?.id === playerId;
   const revealingAnswer = Boolean(game.state.answerRevealUntil);
   const secondsLeft = game.state.roundEndsAt ? Math.max(0, Math.ceil((Number(game.state.roundEndsAt) - Number(game.state.projectedAt ?? game.state.roundEndsAt)) / 1000)) : null;
-  const drawAll = useMemo(() => game.state.strokes as Array<{ points: Array<{ x: number; y: number }>; color?: string; width?: number }>, [game.state.strokes]);
+  const drawAll = game.state.strokes as Array<{ points: Array<{ x: number; y: number }>; color?: string; width?: number }>;
+  const strokeSignature = useMemo(() => JSON.stringify(drawAll), [drawAll]);
+  const paintedSignature = useRef("");
   useEffect(() => {
+    if (paintedSignature.current === strokeSignature) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.fillStyle = "#fffdf8"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     for (const stroke of drawAll) paintStroke(ctx, stroke.points, stroke.color, stroke.width);
-  }, [drawAll]);
+    paintedSignature.current = strokeSignature;
+  }, [drawAll, strokeSignature]);
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     return { x: ((event.clientX - rect.left) / rect.width) * event.currentTarget.width, y: ((event.clientY - rect.top) / rect.height) * event.currentTarget.height };

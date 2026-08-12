@@ -3,6 +3,7 @@ import { Chess, DEFAULT_POSITION, type Square } from "chess.js";
 import {
   CHOSUNG_QUESTIONS,
   DRAWING_PROMPTS,
+  DEFENSE_WORDS,
   LIAR_WORDS,
   SAME_ANSWER_QUESTIONS,
   WORD_CHAIN_WORDS,
@@ -10,7 +11,8 @@ import {
 
 export type GamePlayer = { id: string; name: string; score: number };
 export type GamePhase = "playing" | "finished";
-export type GameOptions = { rounds?: number };
+export type DefenseDifficulty = "easy" | "medium" | "hard";
+export type GameOptions = { rounds?: number; difficulty?: DefenseDifficulty };
 export type GameFeedback = { id: string; playerId: string; text: string; kind: "wrong" | "correct"; createdAt: number };
 
 export type GameEnvelope = {
@@ -50,10 +52,23 @@ export type DavinciTile = {
   isJoker: boolean;
   revealed: boolean;
 };
+export type RummikubColor = "red" | "blue" | "yellow" | "black";
+export type RummikubTile = { id: string; color: RummikubColor | null; number: number | null; isJoker: boolean };
+export type WordDefenseEnemy = { id: string; word: string; lane: number; spawnedAt: number; fallDurationMs: number };
 
 const INITIAL_SOUND_I_OR_Y_MEDIALS = new Set([2, 3, 6, 7, 12, 17, 20]); // ㅑ, ㅒ, ㅕ, ㅖ, ㅛ, ㅠ, ㅣ
 const WORD_CHAIN_TURN_MS = 20_000;
 const SAME_ANSWER_REVEAL_MS = 3_000;
+const WORD_DEFENSE_DURATION_MS = 180_000;
+
+const DEFENSE_CONFIG: Record<DefenseDifficulty, {
+  baseHp: number; bossHp: number; startIntervalMs: number; endIntervalMs: number; startFallMs: number; endFallMs: number;
+  survivalRate: number; killRate: number; completionBonus: number; bossBonus: number; rewardCap: number;
+}> = {
+  easy: { baseHp: 12, bossHp: 50, startIntervalMs: 3_200, endIntervalMs: 1_250, startFallMs: 22_000, endFallMs: 10_000, survivalRate: 1, killRate: 1, completionBonus: 10, bossBonus: 25, rewardCap: 65 },
+  medium: { baseHp: 9, bossHp: 100, startIntervalMs: 2_650, endIntervalMs: 900, startFallMs: 18_000, endFallMs: 7_500, survivalRate: 2, killRate: 2, completionBonus: 18, bossBonus: 50, rewardCap: 125 },
+  hard: { baseHp: 7, bossHp: 200, startIntervalMs: 2_200, endIntervalMs: 680, startFallMs: 15_000, endFallMs: 6_000, survivalRate: 3, killRate: 3, completionBonus: 28, bossBonus: 90, rewardCap: 220 },
+};
 
 function seededIndex(seed: number, length: number, salt = 0) {
   const x = Math.sin(seed * 9301 + salt * 49297) * 10000;
@@ -119,6 +134,75 @@ function createDavinciDeck(seed: number) {
     tiles.push({ id: `d${id++}`, color, number: null, isJoker: true, revealed: false });
   }
   return seededShuffle(tiles, seed);
+}
+
+function createRummikubDeck(seed: number) {
+  const colors: RummikubColor[] = ["red", "blue", "yellow", "black"];
+  const tiles: RummikubTile[] = [];
+  let id = 0;
+  for (let copy = 0; copy < 2; copy++) {
+    for (const color of colors) {
+      for (let number = 1; number <= 13; number++) tiles.push({ id: `r${id++}`, color, number, isJoker: false });
+    }
+  }
+  tiles.push({ id: `r${id++}`, color: null, number: null, isJoker: true });
+  tiles.push({ id: `r${id++}`, color: null, number: null, isJoker: true });
+  return seededShuffle(tiles, seed);
+}
+
+function sortRummikubRack(rack: RummikubTile[]) {
+  const colorOrder: Record<RummikubColor, number> = { red: 0, blue: 1, yellow: 2, black: 3 };
+  rack.sort((a, b) => Number(a.isJoker) - Number(b.isJoker)
+    || Number(a.number) - Number(b.number)
+    || colorOrder[a.color ?? "black"] - colorOrder[b.color ?? "black"]);
+  return rack;
+}
+
+type RummikubMeldAnalysis = { valid: boolean; score: number; type: "group" | "run" | null; ordered: RummikubTile[] };
+
+function analyzeRummikubMeld(tiles: RummikubTile[]): RummikubMeldAnalysis {
+  if (tiles.length < 3) return { valid: false, score: 0, type: null, ordered: tiles };
+  const jokers = tiles.filter((tile) => tile.isJoker);
+  const numbered = tiles.filter((tile) => !tile.isJoker);
+  if (!numbered.length) return { valid: false, score: 0, type: null, ordered: tiles };
+
+  const sameNumber = numbered.every((tile) => tile.number === numbered[0].number);
+  const uniqueColors = new Set(numbered.map((tile) => tile.color)).size === numbered.length;
+  if (tiles.length <= 4 && sameNumber && uniqueColors) {
+    const colorOrder: Record<RummikubColor, number> = { red: 0, blue: 1, yellow: 2, black: 3 };
+    const ordered = [...numbered].sort((a, b) => colorOrder[a.color!] - colorOrder[b.color!]).concat(jokers);
+    return { valid: true, score: Number(numbered[0].number) * tiles.length, type: "group", ordered };
+  }
+
+  if (tiles.length > 13 || !numbered.every((tile) => tile.color === numbered[0].color)) return { valid: false, score: 0, type: null, ordered: tiles };
+  const numbers = numbered.map((tile) => Number(tile.number));
+  if (new Set(numbers).size !== numbers.length) return { valid: false, score: 0, type: null, ordered: tiles };
+  let chosenStart = -1;
+  for (let start = 14 - tiles.length; start >= 1; start--) {
+    if (numbers.every((number) => number >= start && number < start + tiles.length)) {
+      chosenStart = start;
+      break;
+    }
+  }
+  if (chosenStart < 0) return { valid: false, score: 0, type: null, ordered: tiles };
+  const byNumber = new Map(numbered.map((tile) => [Number(tile.number), tile]));
+  const spareJokers = [...jokers];
+  const ordered = Array.from({ length: tiles.length }, (_, index) => byNumber.get(chosenStart + index) ?? spareJokers.shift()!);
+  const score = tiles.length * (chosenStart * 2 + tiles.length - 1) / 2;
+  return { valid: true, score, type: "run", ordered };
+}
+
+function defenseWord(seed: number, spawnCount: number, progress: number) {
+  let bank: readonly string[];
+  if (progress < 0.25) bank = DEFENSE_WORDS.short;
+  else if (progress < 0.55) bank = [...DEFENSE_WORDS.short, ...DEFENSE_WORDS.medium];
+  else if (progress < 0.78) bank = [...DEFENSE_WORDS.medium, ...DEFENSE_WORDS.long];
+  else bank = [...DEFENSE_WORDS.long, ...DEFENSE_WORDS.mixed];
+  return bank[seededIndex(seed + spawnCount * 53, bank.length, spawnCount + 11)];
+}
+
+function normalizeDefenseInput(value: unknown) {
+  return String(value ?? "").trim().toLocaleLowerCase("ko-KR");
 }
 
 function sortDavinciHand<T extends { color: "black" | "white"; number: number | null; isJoker: boolean }>(hand: T[]) {
@@ -317,6 +401,56 @@ export function createGame(
         : `${seated[0]?.name ?? "첫 플레이어"}님, 타일을 뽑으세요.`;
       break;
     }
+    case "rummikub": {
+      const pool = createRummikubDeck(seed);
+      const racks: Record<string, RummikubTile[]> = Object.fromEntries(seated.map((player) => [player.id, []]));
+      for (let count = 0; count < 14; count++) {
+        for (const player of seated) racks[player.id].push(pool.pop()!);
+      }
+      Object.values(racks).forEach(sortRummikubRack);
+      base.state = {
+        racks,
+        pool,
+        table: [],
+        opened: Object.fromEntries(seated.map((player) => [player.id, false])),
+        consecutivePasses: 0,
+        turnSnapshot: {
+          playerId: seated[0]?.id,
+          rack: clone(racks[seated[0]?.id] ?? []),
+          table: [],
+          addedTileIds: [],
+          manipulatedTable: false,
+        },
+      };
+      base.message = `${seated[0]?.name ?? "첫 플레이어"}님 차례 · 최초 등록은 30점 이상입니다.`;
+      break;
+    }
+    case "word-defense": {
+      const difficulty: DefenseDifficulty = options.difficulty === "medium" || options.difficulty === "hard" ? options.difficulty : "easy";
+      const config = DEFENSE_CONFIG[difficulty];
+      base.state = {
+        difficulty,
+        startedAt: seed,
+        endsAt: seed + WORD_DEFENSE_DURATION_MS,
+        durationMs: WORD_DEFENSE_DURATION_MS,
+        projectedAt: seed,
+        nextSpawnAt: seed + 1_200,
+        spawnCount: 0,
+        enemies: [],
+        baseHp: config.baseHp,
+        maxBaseHp: config.baseHp,
+        typedKills: Object.fromEntries(seated.map((player) => [player.id, 0])),
+        destroyed: Object.fromEntries(seated.map((player) => [player.id, 0])),
+        boomCharges: Object.fromEntries(seated.map((player) => [player.id, 0])),
+        boss: null,
+        bossSpawned: false,
+        bossDefeated: false,
+        lastEvent: null,
+        goldRewards: {},
+      };
+      base.message = `3분 협동 방어 시작 · ${difficulty.toUpperCase()} · 승리 기록에는 반영되지 않습니다.`;
+      break;
+    }
   }
   return base;
 }
@@ -393,6 +527,16 @@ export function removePlayerFromGame(current: GameEnvelope, playerId: string): G
       game.state.hasDrawn = false;
     }
   }
+  if (game.gameId === "rummikub") {
+    delete game.state.racks[playerId];
+    delete game.state.opened[playerId];
+    if (game.state.turnSnapshot?.playerId === playerId) startRummikubTurn(game);
+  }
+  if (game.gameId === "word-defense") {
+    delete game.state.typedKills[playerId];
+    delete game.state.destroyed[playerId];
+    delete game.state.boomCharges[playerId];
+  }
   game.message = `${removed.name}님이 나갔습니다. 게임을 계속합니다.`;
   game.log = appendLog(game, `${removed.name} 퇴장`);
   return game;
@@ -402,7 +546,10 @@ export function reduceGame(current: GameEnvelope, command: GameCommand): GameEnv
   const game = advanceTimedGame(current, command.now ?? current.seed);
   if (game.phase === "finished" && command.type !== "REMATCH") return fail(game, "이미 끝난 게임입니다.");
   if (playerIndex(game, command.playerId) < 0) return fail(game, "참가자만 행동할 수 있습니다.");
-  if (command.type === "REMATCH") return createGame(game.gameId, game.players, game.seed + 1, { rounds: Number(game.state.maxRounds) || undefined });
+  if (command.type === "REMATCH") return createGame(game.gameId, game.players, game.seed + 1, {
+    rounds: Number(game.state.maxRounds) || undefined,
+    difficulty: game.state.difficulty as DefenseDifficulty | undefined,
+  });
   game.feedback = undefined;
 
   let next: GameEnvelope;
@@ -431,6 +578,10 @@ export function reduceGame(current: GameEnvelope, command: GameCommand): GameEnv
       next = reduceYut(game, command); break;
     case "davinci-code":
       next = reduceDavinciCode(game, command); break;
+    case "rummikub":
+      next = reduceRummikub(game, command); break;
+    case "word-defense":
+      next = reduceWordDefense(game, command); break;
   }
   if (next.phase === "finished" && !next.state.finishedAt) next.state.finishedAt = command.now ?? next.seed;
   return next;
@@ -471,6 +622,7 @@ export function advanceTimedGame(current: GameEnvelope, now: number): GameEnvelo
       return nextSameAnswerRound(game);
     }
   }
+  if (game.gameId === "word-defense") return advanceWordDefense(game, now);
   return game;
 }
 
@@ -1379,6 +1531,264 @@ function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
   return answerFeedback(game, command, `${guessLabel}은(는) 오답! 내 타일이 공개되고 턴이 끝났습니다.`);
 }
 
+function startRummikubTurn(game: GameEnvelope) {
+  const playerId = game.players[game.turn]?.id;
+  game.state.turnSnapshot = {
+    playerId,
+    rack: clone((game.state.racks[playerId] ?? []) as RummikubTile[]),
+    table: clone((game.state.table ?? []) as RummikubTile[][]),
+    addedTileIds: [],
+    manipulatedTable: false,
+  };
+}
+
+function nextRummikubTurn(game: GameEnvelope) {
+  game.turn = nextIndex(game, game.turn);
+  startRummikubTurn(game);
+  const nextPlayer = game.players[game.turn];
+  game.message = game.state.opened[nextPlayer.id]
+    ? `${nextPlayer.name}님 차례 · 조합을 만들거나 타일을 뽑으세요.`
+    : `${nextPlayer.name}님 차례 · 내 타일만으로 30점 이상 등록하세요.`;
+  return game;
+}
+
+function rummikubRackPenalty(rack: RummikubTile[]) {
+  return rack.reduce((sum, tile) => sum + (tile.isJoker ? 30 : Number(tile.number)), 0);
+}
+
+function finishRummikubPool(game: GameEnvelope) {
+  const penalties = game.players.map((player) => ({ player, penalty: rummikubRackPenalty(game.state.racks[player.id] as RummikubTile[]) }));
+  const minimum = Math.min(...penalties.map((entry) => entry.penalty));
+  return finish(game, penalties.filter((entry) => entry.penalty === minimum).map((entry) => entry.player.id), `타일 더미가 비었습니다 · 남은 타일 합계 ${minimum}점으로 승부가 끝났습니다.`);
+}
+
+function reduceRummikub(game: GameEnvelope, command: GameCommand) {
+  if (!assertTurn(game, command.playerId)) return fail(game, "지금은 내 차례가 아닙니다.");
+  if (game.state.turnSnapshot?.playerId !== command.playerId) startRummikubTurn(game);
+  const rack = game.state.racks[command.playerId] as RummikubTile[];
+  const table = game.state.table as RummikubTile[][];
+  const snapshot = game.state.turnSnapshot as { playerId: string; rack: RummikubTile[]; table: RummikubTile[][]; addedTileIds: string[]; manipulatedTable: boolean };
+
+  if (command.type === "UNDO_TURN") {
+    game.state.racks[command.playerId] = clone(snapshot.rack);
+    game.state.table = clone(snapshot.table);
+    startRummikubTurn(game);
+    game.message = "이번 턴의 변경을 모두 되돌렸습니다.";
+    return game;
+  }
+
+  if (command.type === "PLAY_TILES") {
+    const tileIds = Array.isArray(command.payload?.tileIds) ? command.payload.tileIds.map(String) : [];
+    if (!tileIds.length || new Set(tileIds).size !== tileIds.length) return fail(game, "내 타일을 하나 이상 골라주세요.");
+    const selected = tileIds.map((id) => rack.find((tile) => tile.id === id));
+    if (selected.some((tile) => !tile)) return fail(game, "선택한 타일을 내 받침대에서 찾을 수 없습니다.");
+    const targetMeldIndex = Number(command.payload?.targetMeldIndex ?? -1);
+    if (!Number.isInteger(targetMeldIndex) || targetMeldIndex < -1 || targetMeldIndex >= table.length) return fail(game, "타일을 놓을 조합을 다시 골라주세요.");
+    if (!game.state.opened[command.playerId] && targetMeldIndex >= 0) return fail(game, "최초 30점 등록 전에는 기존 테이블 조합을 사용할 수 없습니다.");
+    game.state.racks[command.playerId] = rack.filter((tile) => !tileIds.includes(tile.id));
+    if (targetMeldIndex < 0) table.push(selected as RummikubTile[]);
+    else table[targetMeldIndex].push(...selected as RummikubTile[]);
+    snapshot.addedTileIds.push(...tileIds);
+    game.message = `${tileIds.length}개 타일을 테이블에 놓았습니다. 유효한 조합인지 확인하고 턴을 끝내세요.`;
+    return game;
+  }
+
+  if (command.type === "MOVE_TABLE_TILE") {
+    if (!game.state.opened[command.playerId]) return fail(game, "최초 30점 등록을 마친 다음 턴부터 테이블을 재배치할 수 있습니다.");
+    const fromMeldIndex = Number(command.payload?.fromMeldIndex);
+    let targetMeldIndex = Number(command.payload?.targetMeldIndex ?? -1);
+    const tileId = String(command.payload?.tileId ?? "");
+    if (!Number.isInteger(fromMeldIndex) || fromMeldIndex < 0 || fromMeldIndex >= table.length) return fail(game, "옮길 조합을 찾을 수 없습니다.");
+    const tileIndex = table[fromMeldIndex].findIndex((tile) => tile.id === tileId);
+    if (tileIndex < 0) return fail(game, "옮길 타일을 찾을 수 없습니다.");
+    if (!Number.isInteger(targetMeldIndex) || targetMeldIndex < -1 || targetMeldIndex >= table.length || targetMeldIndex === fromMeldIndex) return fail(game, "다른 조합이나 새 조합을 골라주세요.");
+    const [tile] = table[fromMeldIndex].splice(tileIndex, 1);
+    if (!table[fromMeldIndex].length) {
+      table.splice(fromMeldIndex, 1);
+      if (targetMeldIndex > fromMeldIndex) targetMeldIndex -= 1;
+    }
+    if (targetMeldIndex < 0) table.push([tile]);
+    else table[targetMeldIndex].push(tile);
+    snapshot.manipulatedTable = true;
+    game.message = "테이블 타일을 옮겼습니다. 모든 조합을 완성한 뒤 턴을 끝내세요.";
+    return game;
+  }
+
+  if (command.type === "DRAW_TILE") {
+    if (snapshot.addedTileIds.length || snapshot.manipulatedTable) return fail(game, "타일을 뽑기 전에 이번 턴의 배치를 되돌려 주세요.");
+    const tile = (game.state.pool as RummikubTile[]).pop();
+    if (tile) {
+      rack.push(tile);
+      sortRummikubRack(rack);
+      game.state.consecutivePasses = 0;
+      game.log = appendLog(game, `${game.players[game.turn].name} 타일 1개 뽑기`);
+    } else {
+      game.state.consecutivePasses = Number(game.state.consecutivePasses ?? 0) + 1;
+      if (game.state.consecutivePasses >= game.players.length) return finishRummikubPool(game);
+      game.log = appendLog(game, `${game.players[game.turn].name} 더미가 비어 넘기기`);
+    }
+    return nextRummikubTurn(game);
+  }
+
+  if (command.type !== "COMMIT_TURN") return fail(game, "타일을 놓거나 한 장 뽑아주세요.");
+  if (!snapshot.addedTileIds.length) return fail(game, "내 받침대에서 타일을 하나 이상 내려놓아야 합니다.");
+  const analyses = table.map(analyzeRummikubMeld);
+  const invalidIndex = analyses.findIndex((analysis) => !analysis.valid);
+  if (invalidIndex >= 0) return fail(game, `${invalidIndex + 1}번 조합이 완성되지 않았습니다. 그룹 또는 런을 만들어주세요.`);
+  if (!game.state.opened[command.playerId]) {
+    if (snapshot.manipulatedTable || table.length < snapshot.table.length) return fail(game, "최초 등록에는 테이블의 기존 타일을 사용할 수 없습니다.");
+    const initialScore = analyses.slice(snapshot.table.length).reduce((sum, analysis) => sum + analysis.score, 0);
+    if (initialScore < 30) return fail(game, `최초 등록 합계가 ${initialScore}점입니다. 30점 이상이 필요합니다.`);
+    game.state.opened[command.playerId] = true;
+    game.message = `최초 등록 ${initialScore}점 성공!`;
+  }
+  game.state.table = analyses.map((analysis) => analysis.ordered);
+  game.state.consecutivePasses = 0;
+  game.log = appendLog(game, `${game.players[game.turn].name} 타일 ${snapshot.addedTileIds.length}개 등록`);
+  if ((game.state.racks[command.playerId] as RummikubTile[]).length === 0) return finish(game, [command.playerId], `${game.players[game.turn].name}님이 모든 타일을 내려놓고 Rummikub!`);
+  return nextRummikubTurn(game);
+}
+
+function defenseRewards(game: GameEnvelope, survivedMs: number, success: boolean) {
+  const difficulty = game.state.difficulty as DefenseDifficulty;
+  const config = DEFENSE_CONFIG[difficulty];
+  const survivalUnits = Math.floor(Math.max(0, survivedMs) / 15_000);
+  return Object.fromEntries(game.players.map((player) => {
+    const typedKills = Number(game.state.typedKills[player.id] ?? 0);
+    const reward = survivalUnits * config.survivalRate
+      + Math.floor(typedKills / 5) * config.killRate
+      + (success ? config.completionBonus : 0)
+      + (game.state.bossDefeated ? config.bossBonus : 0);
+    return [player.id, Math.min(config.rewardCap, reward)];
+  }));
+}
+
+function finishWordDefense(game: GameEnvelope, now: number, success: boolean) {
+  const survivedMs = Math.min(WORD_DEFENSE_DURATION_MS, Math.max(0, now - Number(game.state.startedAt)));
+  game.phase = "finished";
+  game.winnerIds = success ? game.players.map((player) => player.id) : [];
+  game.state.survivedMs = survivedMs;
+  game.state.goldRewards = defenseRewards(game, survivedMs, success);
+  game.state.finishedAt = now;
+  game.message = success
+    ? game.state.bossDefeated ? "3분 방어 성공! 보스까지 격파했습니다!" : "3분 방어 성공! 보스 보너스는 놓쳤지만 기지를 지켰습니다."
+    : `기지가 파괴되었습니다 · ${Math.floor(survivedMs / 1_000)}초 생존`;
+  game.log = appendLog(game, game.message);
+  return game;
+}
+
+function advanceWordDefense(game: GameEnvelope, now: number) {
+  const difficulty = game.state.difficulty as DefenseDifficulty;
+  const config = DEFENSE_CONFIG[difficulty];
+  const startedAt = Number(game.state.startedAt);
+  const endsAt = Number(game.state.endsAt);
+  const totalProgress = Math.max(0, Math.min(1, (now - startedAt) / WORD_DEFENSE_DURATION_MS));
+  game.state.projectedAt = now;
+
+  let safety = 0;
+  while (Number(game.state.nextSpawnAt) <= now && Number(game.state.nextSpawnAt) < endsAt - 4_000 && safety++ < 320) {
+    const spawnedAt = Number(game.state.nextSpawnAt);
+    const progress = Math.max(0, Math.min(1, (spawnedAt - startedAt) / WORD_DEFENSE_DURATION_MS));
+    const count = Number(game.state.spawnCount ?? 0);
+    const fallDurationMs = Math.round(config.startFallMs + (config.endFallMs - config.startFallMs) * progress);
+    const enemy: WordDefenseEnemy = {
+      id: `e${count}-${spawnedAt}`,
+      word: defenseWord(game.seed, count, progress),
+      lane: seededIndex(game.seed + count * 71, 7, count + 19),
+      spawnedAt,
+      fallDurationMs,
+    };
+    (game.state.enemies as WordDefenseEnemy[]).push(enemy);
+    game.state.spawnCount = count + 1;
+    const interval = Math.round(config.startIntervalMs + (config.endIntervalMs - config.startIntervalMs) * progress);
+    game.state.nextSpawnAt = spawnedAt + interval;
+  }
+
+  if (!game.state.bossSpawned && now >= startedAt + 120_000) {
+    game.state.bossSpawned = true;
+    game.state.boss = {
+      hp: config.bossHp,
+      maxHp: config.bossHp,
+      word: defenseWord(game.seed + 8_888, Number(game.state.spawnCount), 1),
+      spawnedAt: startedAt + 120_000,
+      fallDurationMs: 60_000,
+    };
+    game.message = `보스 출현! 단어 ${config.bossHp}개를 입력해 쓰러뜨리세요!`;
+  }
+
+  const enemies = game.state.enemies as WordDefenseEnemy[];
+  const escaped = enemies.filter((enemy) => now >= enemy.spawnedAt + enemy.fallDurationMs);
+  if (escaped.length) {
+    const escapedIds = new Set(escaped.map((enemy) => enemy.id));
+    game.state.enemies = enemies.filter((enemy) => !escapedIds.has(enemy.id));
+    game.state.baseHp = Math.max(0, Number(game.state.baseHp) - escaped.length);
+    game.state.lastEvent = { id: `breach-${now}`, type: "breach", count: escaped.length, createdAt: now };
+    game.message = `${escaped.length}마리가 방어선을 통과했습니다!`;
+  }
+  if (Number(game.state.baseHp) <= 0) return finishWordDefense(game, now, false);
+  if (now >= endsAt) return finishWordDefense(game, endsAt, true);
+  if (totalProgress >= 0.8 && !game.state.bossDefeated) game.message = "최후반입니다! 보스와 몰려오는 적을 함께 막으세요.";
+  return game;
+}
+
+function reduceWordDefense(game: GameEnvelope, command: GameCommand) {
+  if (command.type !== "TYPE_WORD") return fail(game, "적의 단어를 입력하고 Enter를 눌러주세요.");
+  const typed = normalizeDefenseInput(command.payload?.word);
+  if (!typed) return fail(game, "단어를 입력해 주세요.");
+  const now = command.now ?? game.seed;
+  const charges = Number(game.state.boomCharges[command.playerId] ?? 0);
+  if (typed === "boom!") {
+    if (charges < 1) return answerFeedback(game, command, "BOOM 게이지가 아직 부족합니다.");
+    const enemies = game.state.enemies as WordDefenseEnemy[];
+    const count = Math.min(enemies.length, 5 + seededIndex(game.seed + now, 6, Number(game.state.spawnCount)));
+    if (!count) return fail(game, "지금 폭발시킬 일반 적이 없습니다.");
+    const targets = [...enemies]
+      .sort((a, b) => ((now - b.spawnedAt) / b.fallDurationMs) - ((now - a.spawnedAt) / a.fallDurationMs))
+      .slice(0, count);
+    const targetIds = new Set(targets.map((enemy) => enemy.id));
+    game.state.enemies = enemies.filter((enemy) => !targetIds.has(enemy.id));
+    game.state.boomCharges[command.playerId] = charges - 1;
+    game.state.destroyed[command.playerId] = Number(game.state.destroyed[command.playerId] ?? 0) + count;
+    const actor = game.players[playerIndex(game, command.playerId)];
+    actor.score = Number(game.state.destroyed[command.playerId]);
+    game.state.lastEvent = { id: `boom-${now}-${command.playerId}`, type: "boom", playerId: command.playerId, enemyIds: [...targetIds], targets, count, createdAt: now };
+    game.message = `BOOM! ${actor.name}님이 위험한 적 ${count}마리를 한꺼번에 제거했습니다!`;
+    return game;
+  }
+
+  const boss = game.state.boss as { hp: number; maxHp: number; word: string } | null;
+  if (boss && !game.state.bossDefeated && normalizeDefenseInput(boss.word) === typed) {
+    boss.hp -= 1;
+    game.state.lastEvent = { id: `boss-${now}-${command.playerId}`, type: "boss-hit", playerId: command.playerId, count: 1, createdAt: now };
+    if (boss.hp <= 0) {
+      boss.hp = 0;
+      game.state.bossDefeated = true;
+      game.message = `BOSS BREAK! ${game.players[playerIndex(game, command.playerId)].name}님이 마지막 일격을 넣었습니다!`;
+    } else {
+      boss.word = defenseWord(game.seed + boss.hp * 97, Number(game.state.spawnCount) + boss.hp, 1);
+      game.message = `보스 타격! 남은 단어 ${boss.hp}개`;
+    }
+    return game;
+  }
+
+  const enemies = game.state.enemies as WordDefenseEnemy[];
+  const target = [...enemies]
+    .filter((enemy) => normalizeDefenseInput(enemy.word) === typed)
+    .sort((a, b) => ((now - b.spawnedAt) / b.fallDurationMs) - ((now - a.spawnedAt) / a.fallDurationMs))[0];
+  if (!target) return answerFeedback(game, command, `‘${String(command.payload?.word ?? "").trim()}’에 해당하는 적이 없습니다.`);
+  game.state.enemies = enemies.filter((enemy) => enemy.id !== target.id);
+  const previousTyped = Number(game.state.typedKills[command.playerId] ?? 0);
+  const nextTyped = previousTyped + 1;
+  game.state.typedKills[command.playerId] = nextTyped;
+  game.state.destroyed[command.playerId] = Number(game.state.destroyed[command.playerId] ?? 0) + 1;
+  if (Math.floor(nextTyped / 20) > Math.floor(previousTyped / 20)) game.state.boomCharges[command.playerId] = Number(game.state.boomCharges[command.playerId] ?? 0) + 1;
+  const actor = game.players[playerIndex(game, command.playerId)];
+  actor.score = Number(game.state.destroyed[command.playerId]);
+  game.state.lastEvent = { id: `hit-${target.id}-${command.playerId}`, type: "hit", playerId: command.playerId, enemyIds: [target.id], targets: [target], count: 1, createdAt: now };
+  game.message = `${actor.name}님이 ‘${target.word}’ 적을 처치했습니다!`;
+  return game;
+}
+
 function finish(game: GameEnvelope, winnerIds: string[], message: string) {
   game.phase = "finished";
   game.winnerIds = winnerIds;
@@ -1451,6 +1861,18 @@ export function projectGame(game: GameEnvelope, viewerId: string, now = Date.now
     );
     projected.state.deck = Array(projected.state.deck.length).fill(null);
     if (projected.state.pendingPlayerId !== viewerId) projected.state.pendingTileId = null;
+  }
+  if (projected.gameId === "rummikub") {
+    const racks = projected.state.racks as Record<string, Array<RummikubTile | null>>;
+    for (const [playerId, rack] of Object.entries(racks)) {
+      if (projected.phase !== "finished" && playerId !== viewerId) racks[playerId] = Array(rack.length).fill(null);
+    }
+    projected.state.pool = Array(projected.state.pool.length).fill(null);
+    projected.state.turnSnapshot = null;
+  }
+  if (projected.gameId === "word-defense") {
+    projected.state.projectedAt = now;
+    if (projected.state.lastEvent && now - Number(projected.state.lastEvent.createdAt ?? now) > 1_800) projected.state.lastEvent = null;
   }
   return projected;
 }
