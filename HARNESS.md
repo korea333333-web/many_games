@@ -2,9 +2,9 @@
 
 이 프로젝트는 화면과 게임 규칙을 분리해, 온라인 통신이 흔들려도 규칙을 독립적으로 검증할 수 있게 구성했다.
 
-- `lib/games/engine.ts`: 열한 게임의 순수 생성기·리듀서·관전자 투영 함수
+- `lib/games/engine.ts`: 열두 게임의 순수 생성기·리듀서·관전자 투영 함수
 - `lib/games/engine.test.ts`: 승리 조건, 턴, 힌트, 비밀 정보, 충돌 규칙의 결정적 단위 테스트
-- `lib/server/platform-store.ts`: D1을 사용하는 명령 버스. 서버가 방·채팅·게임 상태의 단일 기준이다.
+- `lib/server/platform-store.ts`: Supabase의 보호된 상태 저장소를 사용하는 명령 버스. 서버가 방·채팅·게임 상태의 단일 기준이다.
 - `app/api/sync/route.ts`: 익명 기기 세션을 받는 동기화 경계
 - `app/components/GamePlatform.tsx`: 폴링, 재접속, 로비·방·전체 채팅·개인 채팅 UI
 

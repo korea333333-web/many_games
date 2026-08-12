@@ -55,6 +55,14 @@ export function GameRulebook({ open, initialGameId = "gomoku", onClose }: Props)
 
 function RuleVisual({ gameId }: { gameId: GameId }) {
   if (gameId === "gomoku") return <figure className="rule-visual gomoku" role="img" aria-label="가로로 이어진 다섯 개의 검은 돌"><div>{Array.from({ length: 25 }, (_, index) => <i key={index} className={Math.floor(index / 5) === 2 ? "stone" : ""} />)}</div><figcaption>돌 5개를 한 줄로</figcaption></figure>;
+  if (gameId === "go") {
+    const black = new Set([8, 9, 10, 15, 22]);
+    const white = new Set([24, 31, 32, 33]);
+    return <figure className="rule-visual go" role="img" aria-label="흑백 돌이 집을 둘러싸고 죽은 돌을 표시하는 바둑 계가"><div className="go-rule-board">{Array.from({ length: 49 }, (_, index) => {
+      const className = black.has(index) ? "black" : white.has(index) ? "white" : index === 16 ? "dead" : "";
+      return <i key={index} className={className} />;
+    })}</div><div className="go-rule-steps"><span>① 활로</span><span>② 잡기</span><span>③ 패</span><span>④ 계가</span></div><figcaption>집 + 잡은 돌 · 백은 덤 6집반</figcaption></figure>;
+  }
   if (gameId === "word-chain") return <figure className="rule-visual word-chain" role="img" aria-label="사과에서 과자로 이어지는 끝말잇기"><div><b>사과</b><i>→</i><b>과자</b><i>→</i><b>자동차</b></div><figcaption>끝 글자가 다음 단어의 시작</figcaption></figure>;
   if (gameId === "drawing") return <figure className="rule-visual drawing" role="img" aria-label="고양이를 그린 그림을 보고 정답을 맞히는 과정"><div className="drawing-paper"><span className="draw-timer">42초</span><span className="cat-doodle"><i className="cat-ear left" /><i className="cat-ear right" /><i className="cat-eye left" /><i className="cat-eye right" /><b className="cat-nose">•</b><em className="cat-body" /><em className="cat-tail" /></span><span className="draw-pencil">✎</span></div><div className="mini-guess"><span>혹시 토끼?</span><b>고양이! <small>+85</small></b></div><figcaption>그림을 보고 정답을 입력하면 점수를 얻어요</figcaption></figure>;
   if (gameId === "chosung") return <figure className="rule-visual chosung" role="img" aria-label="초성에 힌트가 차례로 추가되는 모습"><div><strong>ㅊ ㅋ</strong><span>분야</span><span>설명</span><span>첫 글자</span></div><figcaption>12초마다 힌트 한 칸 공개</figcaption></figure>;

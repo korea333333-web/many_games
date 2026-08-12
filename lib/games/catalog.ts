@@ -1,5 +1,6 @@
 export type GameId =
   | "gomoku"
+  | "go"
   | "word-chain"
   | "drawing"
   | "chosung"
@@ -32,6 +33,16 @@ const ALL_GAMES: GameInfo[] = [
     maxPlayers: 2,
     accent: "#facc15",
     icon: "●○",
+  },
+  {
+    id: "go",
+    name: "바둑",
+    shortName: "바둑",
+    description: "하루 동안 이어 두는 로그인 전용 19줄 바둑",
+    minPlayers: 2,
+    maxPlayers: 2,
+    accent: "#84a98c",
+    icon: "●\n○",
   },
   {
     id: "word-chain",

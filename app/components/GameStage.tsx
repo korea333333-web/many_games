@@ -15,17 +15,18 @@ type Props = {
 
 type GameViewProps = Pick<Props, "game" | "playerId" | "onAction"> & { disabled: boolean };
 
-const INSTANT_GAMES = new Set<GameId>(["gomoku", "connect-four", "chess"]);
+const INSTANT_GAMES = new Set<GameId>(["gomoku", "go", "connect-four", "chess"]);
 
 export function GameStage({ game, revision, playerId, viewerRole, onAction }: Props) {
   const [optimistic, setOptimistic] = useState<{ revision: number; game: GameEnvelope } | null>(null);
-  const [inspectedChessSeed, setInspectedChessSeed] = useState<number | null>(null);
+  const [inspectedBoardSeed, setInspectedBoardSeed] = useState<number | null>(null);
   const shownGame = optimistic?.revision === revision ? optimistic.game : game;
   const info = GAME_BY_ID[shownGame.gameId];
   const player = shownGame.players.find((item) => item.id === playerId);
   const spectator = viewerRole === "spectator" || !player;
   const winners = shownGame.players.filter((item) => shownGame.winnerIds.includes(item.id));
-  const inspectingFinalChessBoard = shownGame.gameId === "chess" && shownGame.phase === "finished" && inspectedChessSeed === shownGame.seed;
+  const hasInspectibleBoard = shownGame.gameId === "chess" || shownGame.gameId === "go";
+  const inspectingFinalBoard = hasInspectibleBoard && shownGame.phase === "finished" && inspectedBoardSeed === shownGame.seed;
   const runAction = (command: Omit<GameCommand, "playerId">) => {
     if (INSTANT_GAMES.has(shownGame.gameId) && shownGame.phase === "playing" && !spectator) {
       const now = Date.now();
@@ -43,6 +44,7 @@ export function GameStage({ game, revision, playerId, viewerRole, onAction }: Pr
       </div>
       <div className="stage-body">
         {shownGame.gameId === "gomoku" && <Gomoku game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
+        {shownGame.gameId === "go" && <GoBoard game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
         {shownGame.gameId === "connect-four" && <ConnectFour game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
         {shownGame.gameId === "chess" && <Chess game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
         {shownGame.gameId === "word-chain" && <WordChain game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
@@ -55,11 +57,11 @@ export function GameStage({ game, revision, playerId, viewerRole, onAction }: Pr
         {shownGame.gameId === "davinci-code" && <DavinciCode game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
       </div>
       {shownGame.feedback && <AnswerFeedback game={shownGame} playerId={playerId} />}
-      {shownGame.phase === "finished" && !inspectingFinalChessBoard && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} onInspectBoard={shownGame.gameId === "chess" ? () => setInspectedChessSeed(shownGame.seed) : undefined} />}
-      {inspectingFinalChessBoard && (
+      {shownGame.phase === "finished" && !inspectingFinalBoard && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} onInspectBoard={hasInspectibleBoard ? () => setInspectedBoardSeed(shownGame.seed) : undefined} />}
+      {inspectingFinalBoard && (
         <div className="chess-final-board-banner" role="status">
-          <div><strong>체크메이트 · 마지막 판</strong><span>{shownGame.state.lastMove?.san ? `마지막 수 ${shownGame.state.lastMove.san}` : "최종 기물 배치"}</span></div>
-          <button type="button" onClick={() => setInspectedChessSeed(null)}>결과 다시 보기</button>
+          <div><strong>{shownGame.gameId === "go" ? "계가 완료 · 마지막 판" : "체크메이트 · 마지막 판"}</strong><span>{shownGame.gameId === "go" ? `흑 ${shownGame.state.finalScore?.black ?? 0}집 · 백 ${shownGame.state.finalScore?.white ?? 0}집` : shownGame.state.lastMove?.san ? `마지막 수 ${shownGame.state.lastMove.san}` : "최종 기물 배치"}</span></div>
+          <button type="button" onClick={() => setInspectedBoardSeed(null)}>결과 다시 보기</button>
         </div>
       )}
     </div>
@@ -82,6 +84,7 @@ function AnswerFeedback({ game, playerId }: Pick<Props, "game" | "playerId">) {
 
 const VICTORY_THEMES: Record<GameId, { kicker: string; icon: string }> = {
   gomoku: { kicker: "FIVE IN A ROW", icon: "●" },
+  go: { kicker: "FINAL COUNT", icon: "◉" },
   "connect-four": { kicker: "FOUR CONNECTED", icon: "●" },
   chess: { kicker: "CHECKMATE", icon: "♚" },
   "word-chain": { kicker: "LAST WORD", icon: "끝" },
@@ -106,7 +109,7 @@ function VictoryOverlay({ gameId, winners, message, onInspectBoard }: { gameId: 
         <span className="eyebrow">{winners.length ? theme.kicker : "DRAW GAME"}</span>
         <h2>{title}</h2>
         <p>{message}</p>
-        {onInspectBoard && <button className="victory-board-button" type="button" onClick={onInspectBoard}>♟ 마지막 판 보기</button>}
+        {onInspectBoard && <button className="victory-board-button" type="button" onClick={onInspectBoard}>{gameId === "go" ? "◉" : "♟"} 마지막 판 보기</button>}
         <small>{onInspectBoard ? "마지막 판을 확인한 뒤 같은 방으로 돌아갑니다." : "잠시 후 같은 방의 대기 화면으로 돌아갑니다."}</small>
       </div>
     </div>
@@ -115,6 +118,7 @@ function VictoryOverlay({ gameId, winners, message, onInspectBoard }: { gameId: 
 
 function VictoryScene({ gameId }: { gameId: GameId }) {
   if (gameId === "gomoku") return <div className="victory-scene stones" aria-hidden="true">{Array.from({ length: 5 }, (_, index) => <i key={index} />)}</div>;
+  if (gameId === "go") return <div className="victory-scene go-score" aria-hidden="true"><i>●</i><b>집</b><i>○</i></div>;
   if (gameId === "connect-four") return <div className="victory-scene discs" aria-hidden="true">{Array.from({ length: 4 }, (_, index) => <i key={index} />)}</div>;
   if (gameId === "chess") return <div className="victory-scene chess-mate" aria-hidden="true"><i>♔</i><b>CHECKMATE</b><i>♚</i></div>;
   if (gameId === "word-chain") return <div className="victory-scene word-ribbon" aria-hidden="true"><i>끝</i><i>말</i><i>잇</i><i>기</i></div>;
@@ -135,6 +139,67 @@ function Gomoku({ game, playerId, disabled, onAction }: GameViewProps) {
   const board = game.state.board as Array<string | null>;
   const myTurn = game.players[game.turn]?.id === playerId;
   return <div className="board-wrap"><div className="gomoku-board">{board.map((owner, index) => <button key={index} disabled={disabled || !myTurn || Boolean(owner) || game.phase === "finished"} onClick={() => onAction({ type: "PLACE", payload: { index } })} aria-label={`${Math.floor(index / 15) + 1}행 ${index % 15 + 1}열`}>{owner && <i style={{ background: owner === game.players[0].id ? "#111827" : "#f8fafc" }} />}</button>)}</div></div>;
+}
+
+const GO_STAR_POINTS = new Set([60, 66, 72, 174, 180, 186, 288, 294, 300]);
+
+function GoBoard({ game, playerId, disabled, onAction }: GameViewProps) {
+  const board = game.state.board as Array<string | null>;
+  const black = game.players[0];
+  const white = game.players[1];
+  const myTurn = game.players[game.turn]?.id === playerId;
+  const scoring = game.state.mode === "scoring";
+  const dead = new Set<number>((game.state.deadStones ?? []) as number[]);
+  const confirmations = (game.state.scoreConfirmations ?? []) as string[];
+  const lastMoveIndex = game.state.lastMove?.type === "place" ? Number(game.state.lastMove.index) : -1;
+  const finalScore = game.state.finalScore as { black: number; white: number; komi: number } | null;
+
+  return (
+    <div className="go-game">
+      <div className="go-player-strip">
+        <div className={game.turn === 0 && !scoring ? "active" : ""}><i className="black" /><span><b>{black?.name}</b><small>흑 · 잡은 돌 {Number(game.state.captures?.[black?.id] ?? 0)}개</small></span></div>
+        <div className={game.turn === 1 && !scoring ? "active" : ""}><i className="white" /><span><b>{white?.name}</b><small>백 · 잡은 돌 {Number(game.state.captures?.[white?.id] ?? 0)}개 · 덤 6집반</small></span></div>
+      </div>
+      <div className="go-board-frame">
+        <div className="go-board-grid" role="grid" aria-label="19줄 바둑판">
+          {board.map((owner, index) => {
+            const row = Math.floor(index / 19) + 1;
+            const col = index % 19 + 1;
+            const isDead = dead.has(index);
+            return (
+              <button
+                key={index}
+                className={`${lastMoveIndex === index ? "last-move" : ""} ${isDead ? "dead" : ""}`}
+                disabled={disabled || game.phase === "finished" || (!scoring && (!myTurn || Boolean(owner))) || (scoring && !owner)}
+                onClick={() => onAction({ type: scoring ? "TOGGLE_DEAD" : "PLACE", payload: { index } })}
+                aria-label={`${row}행 ${col}열${owner ? ` ${owner === black?.id ? "흑돌" : "백돌"}${isDead ? " 죽은 돌 표시" : ""}` : " 빈 교차점"}`}
+              >
+                {!owner && GO_STAR_POINTS.has(index) && <span className="go-star" aria-hidden="true" />}
+                {owner && <span className={`go-stone ${owner === black?.id ? "black" : "white"}`} aria-hidden="true"><i /></span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {scoring ? (
+        <div className="go-scoring-panel">
+          <div><span className="eyebrow">SCORING</span><strong>죽은 돌을 눌러 표시하세요</strong><small>양쪽이 같은 표시를 확인해야 계가가 끝납니다. 의견이 다르면 계속 둘 수 있어요.</small></div>
+          <div className="go-score-actions">
+            <button className="secondary-button" onClick={() => onAction({ type: "RESUME_PLAY" })}>계속 두기</button>
+            <button className="primary-button" disabled={confirmations.includes(playerId)} onClick={() => onAction({ type: "CONFIRM_SCORE" })}>{confirmations.includes(playerId) ? "확인 완료" : `계가 확인 (${confirmations.length}/2)`}</button>
+          </div>
+        </div>
+      ) : (
+        <div className="go-controls">
+          <div><strong>{disabled ? "관전 중" : myTurn ? "내 차례" : "상대 차례"}</strong><small>마지막 수는 파란 점으로 표시됩니다.</small></div>
+          <button className="go-pass" disabled={disabled || !myTurn || game.phase === "finished"} onClick={() => onAction({ type: "PASS" })}>넘기기</button>
+          <button className="go-resign" disabled={disabled || game.phase === "finished"} onClick={() => onAction({ type: "RESIGN" })}>기권</button>
+        </div>
+      )}
+      {finalScore && <div className="go-final-score"><span>최종 계가</span><b>흑 {finalScore.black}집</b><b>백 {finalScore.white}집 <small>(덤 {finalScore.komi})</small></b></div>}
+      <p className="go-help">한국기원 규칙 · 19줄 · 흑 선착 · 백 덤 6집반 · 패·자충수·빅·동형반복 적용</p>
+    </div>
+  );
 }
 
 function ConnectFour({ game, playerId, disabled, onAction }: GameViewProps) {

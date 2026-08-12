@@ -12,10 +12,10 @@ const players = [
   { id: "d", name: "태오" },
 ];
 
-test("catalog exposes nine games while keeping postponed games dormant", () => {
-  assert.equal(GAME_CATALOG.length, 9);
+test("catalog exposes ten games while keeping postponed games dormant", () => {
+  assert.equal(GAME_CATALOG.length, 10);
   assert.deepEqual(GAME_CATALOG.map((game) => game.id), [
-    "gomoku", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "davinci-code",
+    "gomoku", "go", "drawing", "chosung", "same-answer", "liar", "connect-four", "chess", "uno", "davinci-code",
   ]);
   assert.equal(isGameAvailable("word-chain"), false);
   assert.equal(isGameAvailable("yut"), false);
@@ -47,6 +47,59 @@ test("gomoku rejects turn violations and detects five", () => {
   assert.equal(game.phase, "finished");
   assert.deepEqual(game.winnerIds, ["a"]);
   assert.equal(typeof game.state.finishedAt, "number");
+});
+
+test("go captures surrounded groups and rejects suicide", () => {
+  let game = createGame("go", players.slice(0, 2), 101);
+  game.state.size = 3;
+  game.state.board = [null, "a", null, "a", "b", "a", null, null, null];
+  game.state.positionHistory = [game.state.board.map((stone: string | null) => stone ?? "_").join("|")];
+  game = reduceGame(game, { type: "PLACE", playerId: "a", payload: { index: 7 } });
+  assert.equal(game.state.board[4], null);
+  assert.equal(game.state.captures.a, 1);
+
+  game = createGame("go", players.slice(0, 2), 102);
+  game.state.size = 3;
+  game.state.board = [null, "b", null, "b", null, "b", null, "b", null];
+  game.state.positionHistory = [game.state.board.map((stone: string | null) => stone ?? "_").join("|")];
+  const rejected = reduceGame(game, { type: "PLACE", playerId: "a", payload: { index: 4 } });
+  assert.equal(rejected.state.board[4], null);
+  assert.match(rejected.message, /자충수/);
+});
+
+test("go enforces ko and enters scoring after two passes", () => {
+  let game = createGame("go", players.slice(0, 2), 103);
+  game.state.size = 5;
+  game.state.board = Array(25).fill(null);
+  for (const index of [1, 5, 11]) game.state.board[index] = "a";
+  for (const index of [2, 6, 8, 12]) game.state.board[index] = "b";
+  game.state.positionHistory = [game.state.board.map((stone: string | null) => stone ?? "_").join("|")];
+  game = reduceGame(game, { type: "PLACE", playerId: "a", payload: { index: 7 } });
+  assert.equal(game.state.board[6], null);
+  const koRejected = reduceGame(game, { type: "PLACE", playerId: "b", payload: { index: 6 } });
+  assert.equal(koRejected.state.board[7], "a");
+  assert.match(koRejected.message, /패/);
+
+  game = createGame("go", players.slice(0, 2), 104);
+  game = reduceGame(game, { type: "PASS", playerId: "a" });
+  game = reduceGame(game, { type: "PASS", playerId: "b" });
+  assert.equal(game.state.mode, "scoring");
+});
+
+test("go scoring needs both confirmations and includes captures plus komi", () => {
+  let game = createGame("go", players.slice(0, 2), 105);
+  game.state.size = 3;
+  game.state.board = ["a", "a", "a", "a", null, "a", "a", "a", "a"];
+  game.state.captures.a = 10;
+  game = reduceGame(game, { type: "PASS", playerId: "a" });
+  game = reduceGame(game, { type: "PASS", playerId: "b" });
+  game = reduceGame(game, { type: "CONFIRM_SCORE", playerId: "a" });
+  assert.equal(game.phase, "playing");
+  game = reduceGame(game, { type: "CONFIRM_SCORE", playerId: "b" });
+  assert.equal(game.phase, "finished");
+  assert.deepEqual(game.winnerIds, ["a"]);
+  assert.equal(game.state.finalScore.black, 11);
+  assert.equal(game.state.finalScore.white, 6.5);
 });
 
 test("connect four stacks pieces and wins vertically", () => {

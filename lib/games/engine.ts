@@ -175,6 +175,24 @@ export function createGame(
     case "gomoku":
       base.state = { size: 15, board: Array(225).fill(null) };
       break;
+    case "go": {
+      const board = Array<string | null>(19 * 19).fill(null);
+      base.state = {
+        size: 19,
+        board,
+        captures: Object.fromEntries(seated.map((player) => [player.id, 0])),
+        consecutivePasses: 0,
+        mode: "play",
+        deadStones: [],
+        scoreConfirmations: [],
+        komi: 6.5,
+        positionHistory: [goBoardSignature(board)],
+        lastMove: null,
+        finalScore: null,
+      };
+      base.message = `${seated[0]?.name ?? "흑"}이 흑으로 먼저 둡니다.`;
+      break;
+    }
     case "connect-four":
       base.state = { rows: 6, cols: 7, board: Array(42).fill(null) };
       break;
@@ -368,6 +386,8 @@ export function reduceGame(current: GameEnvelope, command: GameCommand): GameEnv
   switch (game.gameId) {
     case "gomoku":
       next = reduceGomoku(game, command); break;
+    case "go":
+      next = reduceGo(game, command); break;
     case "connect-four":
       next = reduceConnectFour(game, command); break;
     case "chess":
@@ -448,6 +468,208 @@ function reduceGomoku(game: GameEnvelope, command: GameCommand) {
   game.turn = (game.turn + 1) % game.players.length;
   game.message = `${game.players[game.turn].name} 차례`;
   game.log = appendLog(game, `${game.players[playerIndex(game, command.playerId)].name} 돌 놓기`);
+  return game;
+}
+
+function goBoardSignature(board: Array<string | null>) {
+  return board.map((stone) => stone ?? "_").join("|");
+}
+
+function goNeighbors(index: number, size: number) {
+  const row = Math.floor(index / size);
+  const col = index % size;
+  const result: number[] = [];
+  if (row > 0) result.push(index - size);
+  if (row < size - 1) result.push(index + size);
+  if (col > 0) result.push(index - 1);
+  if (col < size - 1) result.push(index + 1);
+  return result;
+}
+
+function goGroup(board: Array<string | null>, index: number, size: number) {
+  const owner = board[index];
+  if (!owner) return { stones: [] as number[], liberties: new Set<number>() };
+  const stones: number[] = [];
+  const liberties = new Set<number>();
+  const seen = new Set([index]);
+  const queue = [index];
+  while (queue.length) {
+    const current = queue.pop()!;
+    stones.push(current);
+    for (const neighbor of goNeighbors(current, size)) {
+      if (!board[neighbor]) liberties.add(neighbor);
+      else if (board[neighbor] === owner && !seen.has(neighbor)) {
+        seen.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+  }
+  return { stones, liberties };
+}
+
+function goTerritory(board: Array<string | null>, size: number, playerIds: string[]) {
+  const territory = Object.fromEntries(playerIds.map((id) => [id, 0])) as Record<string, number>;
+  let neutral = 0;
+  const seen = new Set<number>();
+  for (let index = 0; index < board.length; index++) {
+    if (board[index] || seen.has(index)) continue;
+    const region: number[] = [];
+    const borders = new Set<string>();
+    const queue = [index];
+    seen.add(index);
+    while (queue.length) {
+      const current = queue.pop()!;
+      region.push(current);
+      for (const neighbor of goNeighbors(current, size)) {
+        const owner = board[neighbor];
+        if (owner) borders.add(owner);
+        else if (!seen.has(neighbor)) {
+          seen.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+    if (borders.size === 1) territory[[...borders][0]] = (territory[[...borders][0]] ?? 0) + region.length;
+    else neutral += region.length;
+  }
+  return { territory, neutral };
+}
+
+function calculateGoScore(game: GameEnvelope) {
+  const board = [...game.state.board] as Array<string | null>;
+  const dead = new Set<number>((game.state.deadStones ?? []) as number[]);
+  const captures = { ...(game.state.captures as Record<string, number>) };
+  const blackId = game.players[0].id;
+  const whiteId = game.players[1].id;
+  for (const index of dead) {
+    const owner = board[index];
+    if (!owner) continue;
+    const capturer = owner === blackId ? whiteId : blackId;
+    captures[capturer] = (captures[capturer] ?? 0) + 1;
+    board[index] = null;
+  }
+  const { territory, neutral } = goTerritory(board, Number(game.state.size), [blackId, whiteId]);
+  const komi = Number(game.state.komi ?? 6.5);
+  const black = (territory[blackId] ?? 0) + (captures[blackId] ?? 0);
+  const white = (territory[whiteId] ?? 0) + (captures[whiteId] ?? 0) + komi;
+  return {
+    black,
+    white,
+    komi,
+    territory,
+    captures,
+    neutral,
+    deadCount: dead.size,
+  };
+}
+
+function reduceGo(game: GameEnvelope, command: GameCommand) {
+  const size = Number(game.state.size ?? 19);
+  const board = game.state.board as Array<string | null>;
+  const mode = String(game.state.mode ?? "play");
+  const currentPlayer = game.players[game.turn];
+
+  if (command.type === "RESIGN") {
+    const resigningPlayer = game.players.find((player) => player.id === command.playerId);
+    const winner = game.players.find((player) => player.id !== command.playerId);
+    game.state.lastMove = { type: "resign", playerId: command.playerId };
+    return finish(game, winner ? [winner.id] : [], `${resigningPlayer?.name ?? "플레이어"}이 기권했습니다.`);
+  }
+
+  if (mode === "scoring") {
+    if (command.type === "RESUME_PLAY") {
+      game.state.mode = "play";
+      game.state.deadStones = [];
+      game.state.scoreConfirmations = [];
+      game.state.consecutivePasses = 0;
+      game.message = `${game.players[game.turn].name} 차례로 대국을 계속합니다.`;
+      game.log = appendLog(game, "계속 두기");
+      return game;
+    }
+    if (command.type === "TOGGLE_DEAD") {
+      const index = Number(command.payload?.index);
+      if (!Number.isInteger(index) || index < 0 || index >= board.length || !board[index]) return fail(game, "죽은 돌 무리를 선택해 주세요.");
+      const group = goGroup(board, index, size).stones;
+      const dead = new Set<number>((game.state.deadStones ?? []) as number[]);
+      const removing = group.every((stone) => dead.has(stone));
+      for (const stone of group) {
+        if (removing) dead.delete(stone);
+        else dead.add(stone);
+      }
+      game.state.deadStones = [...dead].sort((a, b) => a - b);
+      game.state.scoreConfirmations = [];
+      game.message = removing ? "죽은 돌 표시를 취소했습니다." : `${group.length}개의 돌을 죽은 돌로 표시했습니다.`;
+      return game;
+    }
+    if (command.type === "CONFIRM_SCORE") {
+      const confirmations = new Set<string>((game.state.scoreConfirmations ?? []) as string[]);
+      confirmations.add(command.playerId);
+      game.state.scoreConfirmations = [...confirmations];
+      if (confirmations.size < game.players.length) {
+        game.message = "한 명이 계가 결과를 확인했습니다. 상대의 확인을 기다립니다.";
+        return game;
+      }
+      const score = calculateGoScore(game);
+      game.state.finalScore = score;
+      const black = game.players[0];
+      const white = game.players[1];
+      if (score.black === score.white) return finish(game, [], `계가 완료 · 흑 ${score.black}집, 백 ${score.white}집`);
+      const winner = score.black > score.white ? black : white;
+      const margin = Math.abs(score.black - score.white);
+      return finish(game, [winner.id], `${winner.name} ${margin}집 승 · 흑 ${score.black}집, 백 ${score.white}집`);
+    }
+    return fail(game, "죽은 돌을 표시하고 양쪽이 계가 결과를 확인해 주세요.");
+  }
+
+  if (!assertTurn(game, command.playerId)) return fail(game, "내 차례가 아닙니다.");
+
+  if (command.type === "PASS") {
+    game.state.consecutivePasses = Number(game.state.consecutivePasses ?? 0) + 1;
+    game.state.lastMove = { type: "pass", playerId: command.playerId };
+    game.log = appendLog(game, `${currentPlayer.name} 넘기기`);
+    game.turn = (game.turn + 1) % game.players.length;
+    if (game.state.consecutivePasses >= 2) {
+      game.state.mode = "scoring";
+      game.state.deadStones = [];
+      game.state.scoreConfirmations = [];
+      game.message = "두 번 연속 넘겼습니다. 죽은 돌을 표시하고 계가를 확인해 주세요.";
+    } else {
+      game.message = `${currentPlayer.name}이 넘겼습니다. ${game.players[game.turn].name} 차례입니다.`;
+    }
+    return game;
+  }
+
+  if (command.type !== "PLACE") return fail(game, "빈 교차점을 선택하거나 넘기기를 눌러 주세요.");
+  const index = Number(command.payload?.index);
+  if (!Number.isInteger(index) || index < 0 || index >= board.length || board[index]) return fail(game, "돌을 놓을 수 없는 자리입니다.");
+
+  const nextBoard = [...board];
+  nextBoard[index] = command.playerId;
+  const opponentId = game.players[(game.turn + 1) % game.players.length].id;
+  const captured = new Set<number>();
+  for (const neighbor of goNeighbors(index, size)) {
+    if (nextBoard[neighbor] !== opponentId) continue;
+    const group = goGroup(nextBoard, neighbor, size);
+    if (group.liberties.size === 0) group.stones.forEach((stone) => captured.add(stone));
+  }
+  captured.forEach((stone) => { nextBoard[stone] = null; });
+  if (goGroup(nextBoard, index, size).liberties.size === 0) return fail(game, "자충수에는 둘 수 없습니다.");
+
+  const signature = goBoardSignature(nextBoard);
+  const history = (game.state.positionHistory ?? []) as string[];
+  if (history.length >= 2 && signature === history[history.length - 2]) return fail(game, "패는 바로 되따낼 수 없습니다. 다른 곳에 한 수 둔 뒤 시도하세요.");
+  if (history.includes(signature)) return finish(game, [], "동일한 바둑판 모양이 반복되어 무승부입니다.");
+
+  game.state.board = nextBoard;
+  game.state.positionHistory = [...history, signature];
+  game.state.captures[command.playerId] = Number(game.state.captures[command.playerId] ?? 0) + captured.size;
+  game.state.consecutivePasses = 0;
+  game.state.lastMove = { type: "place", playerId: command.playerId, index, captured: captured.size };
+  game.turn = (game.turn + 1) % game.players.length;
+  game.message = captured.size
+    ? `${currentPlayer.name}이 ${captured.size}개를 잡았습니다. ${game.players[game.turn].name} 차례입니다.`
+    : `${game.players[game.turn].name} 차례입니다.`;
+  game.log = appendLog(game, `${currentPlayer.name} ${Math.floor(index / size) + 1}-${index % size + 1}${captured.size ? ` · ${captured.size}개 잡음` : ""}`);
   return game;
 }
 

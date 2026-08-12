@@ -17,21 +17,26 @@ type AuthAccount = { email: string; avatarUrl: string | null };
 type RoomListItem = {
   id: string; title: string; gameId: GameId; hostId: string; hostName: string;
   status: "waiting" | "playing"; capacity: number; locked: boolean; memberCount: number; playerCount: number;
+  onlineCount: number; persistent: boolean; reservedForViewer: boolean; participantLocked: boolean;
+  lastActiveAt: string; expiresAt?: string | null;
   settings: { rounds?: number; ranked?: boolean };
 };
-type Member = { id: string; name: string; role: "player" | "spectator"; joinedAt: string };
+type Member = { id: string; name: string; role: "player" | "spectator"; joinedAt: string; online?: boolean };
 type ActiveRoom = RoomListItem & { members: Member[]; viewerRole: string; game: GameEnvelope | null; revision: number };
 type ChatMessage = { id: number; senderId: string; senderName: string; recipientId?: string; recipientName?: string; body: string; createdAt: string };
+type DirectContact = { id: string; nickname: string; lastSeen: string; online: boolean; pinned: boolean };
 type Snapshot = {
   rooms: RoomListItem[];
   onlinePlayers: Array<{ id: string; nickname: string; lastSeen: string }>;
+  directContacts: DirectContact[];
+  pinnedDirectIds: string[];
   globalMessages: ChatMessage[];
   directMessages: ChatMessage[];
   activeRoom: ActiveRoom | null;
   leaderboard: LeaderboardEntry[];
 };
 
-const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], globalMessages: [], directMessages: [], activeRoom: null, leaderboard: [] };
+const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], directContacts: [], pinnedDirectIds: [], globalMessages: [], directMessages: [], activeRoom: null, leaderboard: [] };
 const TIMED_GAME_IDS = new Set<GameId>(["word-chain", "drawing", "chosung", "same-answer"]);
 const ACTION_LOADING_LABELS: Record<string, string> = {
   createRoom: "새 방을 만들고 있어요",
@@ -42,6 +47,7 @@ const ACTION_LOADING_LABELS: Record<string, string> = {
   setNickname: "프로필을 저장하고 있어요",
   sendGlobal: "메시지를 보내고 있어요",
   sendDirect: "메시지를 보내고 있어요",
+  toggleDirectPin: "대화 상대를 고정하고 있어요",
 };
 
 function playerCountLabel(game: Pick<GameInfo, "minPlayers" | "maxPlayers">) {
@@ -114,14 +120,18 @@ export function GamePlatform() {
   const [rulebookOpen, setRulebookOpen] = useState(false);
   const [rulebookGameId, setRulebookGameId] = useState<GameId>("gomoku");
   const [rankingOpen, setRankingOpen] = useState(false);
-  const [hasUnreadChat, setHasUnreadChat] = useState(false);
+  const [hasUnreadGlobal, setHasUnreadGlobal] = useState(false);
+  const [hasUnreadDirect, setHasUnreadDirect] = useState(false);
   const pollInFlight = useRef(false);
   const pendingGameActions = useRef(0);
   const snapshotRef = useRef<Snapshot>(EMPTY_SNAPSHOT);
-  const latestObservedMessageIdRef = useRef(0);
-  const lastReadMessageIdRef = useRef<number | null>(null);
+  const latestObservedGlobalIdRef = useRef(0);
+  const latestObservedDirectIdRef = useRef(0);
+  const lastReadGlobalIdRef = useRef<number | null>(null);
+  const lastReadDirectIdRef = useRef<number | null>(null);
   const chatOpenRef = useRef(false);
   const realtimeRefreshTimer = useRef<number | null>(null);
+  const hasUnreadChat = hasUnreadGlobal || hasUnreadDirect;
 
   useEffect(() => {
     let cancelled = false;
@@ -131,9 +141,18 @@ export function GamePlatform() {
       const value = user ? identityFromUser(user) : getGuestIdentity();
       const previous = readStoredIdentity("game-lobby-identity");
       localStorage.setItem("game-lobby-identity", JSON.stringify(value));
-      const storedLastReadValue = localStorage.getItem(`game-lobby-chat-read:${value.id}`);
-      const storedLastRead = storedLastReadValue === null ? Number.NaN : Number(storedLastReadValue);
-      lastReadMessageIdRef.current = Number.isFinite(storedLastRead) && storedLastRead >= 0 ? storedLastRead : null;
+      const legacyReadValue = localStorage.getItem(`game-lobby-chat-read:${value.id}`);
+      const readMarker = (scope: "global" | "direct") => {
+        const stored = localStorage.getItem(`game-lobby-chat-${scope}-read:${value.id}`) ?? legacyReadValue;
+        const parsed = stored === null ? Number.NaN : Number(stored);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+      };
+      lastReadGlobalIdRef.current = readMarker("global");
+      lastReadDirectIdRef.current = readMarker("direct");
+      latestObservedGlobalIdRef.current = 0;
+      latestObservedDirectIdRef.current = 0;
+      setHasUnreadGlobal(false);
+      setHasUnreadDirect(false);
       const storedRoom = previous?.id === value.id ? localStorage.getItem("game-lobby-active-room") : null;
       if (!storedRoom) localStorage.removeItem("game-lobby-active-room");
       setIdentity(value);
@@ -172,16 +191,25 @@ export function GamePlatform() {
   const applySnapshot = useCallback((data: Snapshot, expectedRoomId: string | null) => {
     if (!identity) return;
     const previous = snapshotRef.current;
-    const allMessages = [...data.globalMessages, ...data.directMessages];
-    const newestMessageId = latestMessageId(allMessages);
-    latestObservedMessageIdRef.current = Math.max(latestObservedMessageIdRef.current, newestMessageId);
-    if (lastReadMessageIdRef.current === null || chatOpenRef.current) {
-      lastReadMessageIdRef.current = newestMessageId;
-      localStorage.setItem(`game-lobby-chat-read:${identity.id}`, String(newestMessageId));
-      if (chatOpenRef.current) setHasUnreadChat(false);
-    } else if (hasUnreadMessage(allMessages, lastReadMessageIdRef.current, identity.id)) {
-      setHasUnreadChat(true);
-    }
+    const newestGlobalId = latestMessageId(data.globalMessages);
+    const newestDirectId = latestMessageId(data.directMessages);
+    latestObservedGlobalIdRef.current = Math.max(latestObservedGlobalIdRef.current, newestGlobalId);
+    latestObservedDirectIdRef.current = Math.max(latestObservedDirectIdRef.current, newestDirectId);
+    const updateUnread = (
+      scope: "global" | "direct",
+      messages: ChatMessage[],
+      newestId: number,
+      lastReadRef: typeof lastReadGlobalIdRef,
+      setUnread: (value: boolean) => void,
+    ) => {
+      if (lastReadRef.current === null || chatOpenRef.current) {
+        lastReadRef.current = newestId;
+        localStorage.setItem(`game-lobby-chat-${scope}-read:${identity.id}`, String(newestId));
+        if (chatOpenRef.current) setUnread(false);
+      } else if (hasUnreadMessage(messages, lastReadRef.current, identity.id)) setUnread(true);
+    };
+    updateUnread("global", data.globalMessages, newestGlobalId, lastReadGlobalIdRef, setHasUnreadGlobal);
+    updateUnread("direct", data.directMessages, newestDirectId, lastReadDirectIdRef, setHasUnreadDirect);
     if (previous.activeRoom?.game && !data.activeRoom?.game && previous.activeRoom.game.phase !== "finished") {
       setNotice("필요한 인원이 나가 게임이 중단되었습니다. 대기방으로 돌아왔습니다.");
     }
@@ -274,7 +302,7 @@ export function GamePlatform() {
 
   const command = useCallback(async (type: string, payload: Record<string, unknown> = {}) => {
     if (!identity) return null;
-    const blocksScreen = type !== "gameAction" && type !== "sendGlobal" && type !== "sendDirect";
+    const blocksScreen = type !== "gameAction" && type !== "sendGlobal" && type !== "sendDirect" && type !== "toggleDirectPin";
     if (blocksScreen) {
       setLoading(true);
       setLoadingLabel(ACTION_LOADING_LABELS[type] ?? "요청을 처리하고 있어요");
@@ -331,9 +359,14 @@ export function GamePlatform() {
 
   const openChat = useCallback(() => {
     chatOpenRef.current = true;
-    lastReadMessageIdRef.current = latestObservedMessageIdRef.current;
-    if (identity) localStorage.setItem(`game-lobby-chat-read:${identity.id}`, String(latestObservedMessageIdRef.current));
-    setHasUnreadChat(false);
+    lastReadGlobalIdRef.current = latestObservedGlobalIdRef.current;
+    lastReadDirectIdRef.current = latestObservedDirectIdRef.current;
+    if (identity) {
+      localStorage.setItem(`game-lobby-chat-global-read:${identity.id}`, String(latestObservedGlobalIdRef.current));
+      localStorage.setItem(`game-lobby-chat-direct-read:${identity.id}`, String(latestObservedDirectIdRef.current));
+    }
+    setHasUnreadGlobal(false);
+    setHasUnreadDirect(false);
     setChatOpen(true);
   }, [identity]);
 
@@ -415,6 +448,14 @@ export function GamePlatform() {
   };
 
   const joinRoom = (room: RoomListItem) => {
+    if (room.gameId === "go" && !authAccount) {
+      setNotice("바둑 이어두기는 Google 로그인 후 참가할 수 있습니다.");
+      return;
+    }
+    if (room.gameId === "go" && room.participantLocked && !room.reservedForViewer) {
+      setNotice("이 바둑방은 처음 참가한 두 사람만 다시 들어갈 수 있습니다.");
+      return;
+    }
     if (room.settings.ranked && !authAccount) {
       setNotice("랭크전은 Google 로그인 후 참가할 수 있습니다.");
       return;
@@ -436,9 +477,10 @@ export function GamePlatform() {
           onAction={(gameCommand) => command("gameAction", { roomId: activeRoomId, command: gameCommand })}
           onChat={openChat}
           onRules={() => { setRulebookGameId(snapshot.activeRoom!.gameId); setRulebookOpen(true); }}
-          hasUnreadChat={hasUnreadChat}
+          hasUnreadGlobal={hasUnreadGlobal}
+          hasUnreadDirect={hasUnreadDirect}
         />
-        <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
+        <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} loggedIn={Boolean(authAccount)} />
         <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
         {notice && <Toast message={notice} onClose={() => setNotice("")} />}
         {loading && <ActionLoading label={loadingLabel} />}
@@ -467,7 +509,7 @@ export function GamePlatform() {
           <div className="top-actions">
             <button className="rulebook-trigger" onClick={() => { setRulebookGameId(gameFilter === "all" ? "gomoku" : gameFilter); setRulebookOpen(true); }}><span aria-hidden="true">▥</span><strong>게임 사전</strong></button>
             <button className="ranking-trigger" onClick={() => setRankingOpen(true)} aria-label="랭킹"><span aria-hidden="true">♛</span><strong>랭킹</strong></button>
-            <button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={openChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button>
+            <button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={openChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤<ChatUnreadDots global={hasUnreadGlobal} direct={hasUnreadDirect} /></button>
             {!authAccount && <button type="button" className="top-login-button" onClick={signInWithGoogle} disabled={authBusy} aria-label="Google 계정으로 로그인"><b aria-hidden="true">G</b><span>{authBusy ? "이동 중…" : "Google 로그인"}</span></button>}
             <button className={authAccount ? "profile-button" : "profile-button guest-profile"} onClick={() => setNicknameOpen(true)} aria-label="내 프로필 열기"><ProfileAvatar nickname={identity.nickname} avatarUrl={authAccount?.avatarUrl} /><strong>{identity.nickname}</strong></button>
             <button className="primary-button create-button" onClick={() => setCreateOpen(true)}>＋ 방 만들기</button>
@@ -492,7 +534,7 @@ export function GamePlatform() {
       </main>
 
       <button className="mobile-create" onClick={() => setCreateOpen(true)} aria-label="방 만들기">＋</button>
-      <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} />
+      <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} loggedIn={Boolean(authAccount)} />
       <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
       {rankingOpen && <LeaderboardModal entries={snapshot.leaderboard} identity={identity} loggedIn={Boolean(authAccount)} onClose={() => setRankingOpen(false)} onLogin={signInWithGoogle} />}
       {createOpen && <CreateRoomModal loading={loading} loggedIn={Boolean(authAccount)} onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) setCreateOpen(false); }} />}
@@ -584,15 +626,23 @@ function PasswordModal({ roomTitle, loading, onClose, onSubmit }: {
 
 function RoomCard({ room, onJoin }: { room: RoomListItem; onJoin: () => void }) {
   const game = GAME_BY_ID[room.gameId];
+  const participantOnly = room.persistent && room.participantLocked && !room.reservedForViewer;
+  const actionLabel = participantOnly
+    ? "참가자 전용"
+    : room.persistent && room.reservedForViewer
+      ? "이어두기"
+      : room.status === "waiting"
+        ? "입장"
+        : "관전";
   return (
-    <article className={room.status === "playing" ? "room-card playing" : "room-card"}>
+    <article className={`${room.status === "playing" ? "room-card playing" : "room-card"} ${room.persistent ? "persistent" : ""}`}>
       <div className="room-art" style={{ background: game.accent }}><span>{game.icon}</span></div>
       <div className="room-info">
-        <div className="room-tags"><span className="game-tag">{game.name}</span>{room.settings.ranked && <span className="ranked-tag">RANKED</span>}<span className={`status-tag ${room.status}`}>{room.status === "waiting" ? "대기 중" : "게임 중"}</span>{room.locked && <span title="비밀번호 방">🔒</span>}</div>
+        <div className="room-tags"><span className="game-tag">{game.name}</span>{room.settings.ranked && <span className="ranked-tag">RANKED</span>}{room.persistent && <span className="saved-tag">24H 저장</span>}<span className={`status-tag ${room.status}`}>{room.status === "waiting" ? "대기 중" : "게임 중"}</span>{room.locked && <span title="비밀번호 방">🔒</span>}</div>
         <h3>{room.title}</h3>
-        <div className="room-meta"><span className="host-avatar">{room.hostName[0]}</span><span>{room.hostName}</span><span>♙ {room.memberCount} / {room.capacity}</span></div>
+        <div className="room-meta"><span className="host-avatar">{room.hostName[0]}</span><span>{room.hostName}</span><span>♙ {room.memberCount} / {room.capacity}</span>{room.persistent && <span>접속 {room.onlineCount}명</span>}</div>
       </div>
-      <button className={room.status === "waiting" ? "join-button" : "watch-button"} onClick={onJoin}>{room.status === "waiting" ? "입장" : "관전"}</button>
+      <button className={room.status === "waiting" || room.reservedForViewer ? "join-button" : "watch-button"} onClick={onJoin} disabled={participantOnly}>{actionLabel}</button>
     </article>
   );
 }
@@ -606,6 +656,7 @@ function CreateRoomModal({ loading, loggedIn, onClose, onCreate }: { loading: bo
   const game = GAME_BY_ID[gameId];
   const supportsRounds = gameId === "drawing" || gameId === "chosung" || gameId === "same-answer";
   const supportsRanked = isRankedGame(gameId);
+  const requiresLogin = gameId === "go";
   const roundOptions = gameId === "same-answer" ? [5, 10] : [3, 5, 7, 10];
   return (
     <div className="modal-backdrop" onMouseDown={(event) => !loading && event.target === event.currentTarget && onClose()}>
@@ -617,33 +668,40 @@ function CreateRoomModal({ loading, loggedIn, onClose, onCreate }: { loading: bo
         {supportsRounds && <label>라운드 수<select value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{roundOptions.map((count) => <option key={count} value={count}>{count}라운드</option>)}</select></label>}
         <label>방 제목<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={30} placeholder={`${game.name} 같이 해요`} /></label>
         <label>비밀번호 <small>{ranked ? "랭크전은 공개방" : "선택"}</small><input value={password} onChange={(event) => setPassword(event.target.value)} disabled={ranked} maxLength={40} type="password" placeholder={ranked ? "랭크전에서는 사용할 수 없어요" : "비워두면 공개 방"} /></label>
-        <p className="modal-note">{ranked ? "로그인한 플레이어 2명이 참가해야 시작할 수 있으며, 중단된 경기는 기록되지 않습니다." : "방에는 최대 10명까지 들어올 수 있으며, 남는 인원은 관전합니다."}</p>
-        <div className="modal-actions"><button className="secondary-button" onClick={onClose} disabled={loading}>취소</button><button className="primary-button" disabled={loading} onClick={() => onCreate({ gameId, title, password, settings: { ...(supportsRounds ? { rounds } : {}), ...(ranked ? { ranked: true } : {}) } })}>{loading ? "만드는 중…" : ranked ? "랭크방 만들기" : "방 만들기"}</button></div>
+        <p className="modal-note">{requiresLogin ? loggedIn ? "바둑판과 참가자 2명이 서버에 저장됩니다. 두 사람 모두 나간 뒤 24시간 동안 돌아오지 않으면 방이 삭제됩니다." : "바둑 이어두기 방은 Google 로그인이 필요합니다." : ranked ? "로그인한 플레이어 2명이 참가해야 시작할 수 있으며, 중단된 경기는 기록되지 않습니다." : "방에는 최대 10명까지 들어올 수 있으며, 남는 인원은 관전합니다."}</p>
+        <div className="modal-actions"><button className="secondary-button" onClick={onClose} disabled={loading}>취소</button><button className="primary-button" disabled={loading || (requiresLogin && !loggedIn)} onClick={() => onCreate({ gameId, title, password, settings: { ...(supportsRounds ? { rounds } : {}), ...(ranked ? { ranked: true } : {}) } })}>{loading ? "만드는 중…" : requiresLogin && !loggedIn ? "로그인 필요" : ranked ? "랭크방 만들기" : "방 만들기"}</button></div>
       </div>
     </div>
   );
 }
 
-function RoomView({ room, identity, loading, syncing, onLeave, onStart, onAction, onChat, onRules, hasUnreadChat }: {
+function ChatUnreadDots({ global, direct }: { global: boolean; direct: boolean }) {
+  return <>{global && <i className="chat-unread-dot global" title="새 전체 채팅" />}{direct && <i className="chat-unread-dot direct" title="새 개인 메시지" />}</>;
+}
+
+function RoomView({ room, identity, loading, syncing, onLeave, onStart, onAction, onChat, onRules, hasUnreadGlobal, hasUnreadDirect }: {
   room: ActiveRoom; identity: Identity; loading: boolean; syncing: boolean; onLeave: () => void; onStart: () => void;
-  onAction: (command: Omit<GameCommand, "playerId">) => Promise<unknown>; onChat: () => void; onRules: () => void; hasUnreadChat: boolean;
+  onAction: (command: Omit<GameCommand, "playerId">) => Promise<unknown>; onChat: () => void; onRules: () => void; hasUnreadGlobal: boolean; hasUnreadDirect: boolean;
 }) {
   const gameInfo = GAME_BY_ID[room.gameId];
   const isHost = room.hostId === identity.id;
+  const canStart = isHost || (room.persistent && room.reservedForViewer);
+  const hasUnreadChat = hasUnreadGlobal || hasUnreadDirect;
   return (
     <div className="room-screen">
       <header className="room-topbar">
         <button className="back-button" onClick={onLeave}>← 로비</button>
         <div><span className="eyebrow">{room.settings.ranked ? `RANKED · ${gameInfo.name}` : gameInfo.name}</span><h1>{room.title}</h1></div>
-        <div className="room-top-actions"><span>{room.members.length}/10명</span><span className={syncing ? "room-sync active" : "room-sync"} aria-live="polite"><i />{syncing ? "저장 중" : "연결됨"}</span><button className="rulebook-trigger compact" onClick={onRules} aria-label={`${gameInfo.name} 규칙 보기`}><span aria-hidden="true">▥</span></button><button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={onChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤{hasUnreadChat && <i className="chat-unread-dot" />}</button></div>
+        <div className="room-top-actions"><span>{room.members.length}/{room.capacity}명</span><span className={syncing ? "room-sync active" : "room-sync"} aria-live="polite"><i />{syncing ? "저장 중" : room.persistent ? "자동 저장됨" : "연결됨"}</span><button className="rulebook-trigger compact" onClick={onRules} aria-label={`${gameInfo.name} 규칙 보기`}><span aria-hidden="true">▥</span></button><button className={hasUnreadChat ? "icon-button has-unread" : "icon-button"} onClick={onChat} aria-label={hasUnreadChat ? "새 메시지 있음 · 채팅 열기" : "채팅 열기"}>▤<ChatUnreadDots global={hasUnreadGlobal} direct={hasUnreadDirect} /></button></div>
       </header>
       <main className="room-layout">
         <aside className="member-panel">
           {room.settings.ranked && <div className="ranked-room-banner"><span>♛</span><div><strong>랭크전</strong><small>승패와 RP가 반영됩니다</small></div></div>}
+          {room.persistent && <div className="saved-room-banner"><span>☁</span><div><strong>이어두기 자동 저장</strong><small>마지막 접속 뒤 24시간 보관</small></div></div>}
           <div className="member-title"><h2>참가자</h2><span>{room.members.filter((member) => member.role === "player").length}/{gameInfo.maxPlayers}</span></div>
-          <div className="member-list">{room.members.map((member) => <div className="member-row" key={member.id}><span className="member-avatar">{member.name[0]}</span><div><strong>{member.name}{member.id === identity.id && " (나)"}</strong><small>{member.id === room.hostId ? "방장" : member.role === "player" ? "플레이어" : "관전자"}</small></div></div>)}</div>
-          {!room.game && isHost && <button className="primary-button full-button" onClick={onStart} disabled={loading}>게임 시작</button>}
-          {!room.game && !isHost && <p className="waiting-copy">방장이 게임을 준비하고 있어요.</p>}
+          <div className="member-list">{room.members.map((member) => <div className={`member-row ${member.online === false ? "offline" : ""}`} key={member.id}><span className="member-avatar">{member.name[0]}</span><div><strong>{member.name}{member.id === identity.id && " (나)"}</strong><small>{member.id === room.hostId ? "방장" : member.role === "player" ? "플레이어" : "관전자"}{room.persistent ? member.online === false ? " · 오프라인" : " · 접속 중" : ""}</small></div></div>)}</div>
+          {!room.game && canStart && <button className="primary-button full-button" onClick={onStart} disabled={loading || room.playerCount < gameInfo.minPlayers}>게임 시작</button>}
+          {!room.game && !canStart && <p className="waiting-copy">방장이 게임을 준비하고 있어요.</p>}
         </aside>
         <section className="game-panel">
           {room.game ? <GameStage game={room.game} revision={room.revision} playerId={identity.id} viewerRole={room.viewerRole} onAction={onAction} /> : <div className="game-waiting"><div className="big-game-icon" style={{ background: gameInfo.accent }}>{gameInfo.icon}</div><span className="eyebrow">{room.settings.ranked ? "♛ 랭크전 · 로그인 2명" : playerCountLabel(gameInfo)}{room.settings.rounds ? ` · ${room.settings.rounds}라운드` : ""}</span><h2>{gameInfo.name}</h2><p>{room.settings.ranked ? "승리하면 RP가 오르고 패배하면 내려갑니다. 중단 경기는 기록되지 않습니다." : gameInfo.description}</p><button className="waiting-rules" onClick={onRules}>▥ 규칙 먼저 보기</button></div>}
@@ -653,21 +711,26 @@ function RoomView({ room, identity, loading, syncing, onLeave, onStart, onAction
   );
 }
 
-function ChatDrawer({ open, onClose, identity, snapshot, command }: {
+function ChatDrawer({ open, onClose, identity, snapshot, command, loggedIn }: {
   open: boolean; onClose: () => void; identity: Identity; snapshot: Snapshot;
   command: (type: string, payload?: Record<string, unknown>) => Promise<unknown>;
+  loggedIn: boolean;
 }) {
   const [tab, setTab] = useState<"global" | "direct">("global");
   const [body, setBody] = useState("");
   const [targetId, setTargetId] = useState<string | null>(null);
   const [userSearch, setUserSearch] = useState("");
-  const target = snapshot.onlinePlayers.find((player) => player.id === targetId);
+  const target = snapshot.directContacts.find((player) => player.id === targetId);
+  const contacts = snapshot.directContacts.filter((player) => player.nickname.includes(userSearch.trim()));
   const messages = tab === "global" ? snapshot.globalMessages : snapshot.directMessages.filter((message) => targetId && ((message.senderId === identity.id && message.recipientId === targetId) || (message.senderId === targetId && message.recipientId === identity.id)));
   const send = async () => {
     if (!body.trim()) return;
     if (tab === "global") await command("sendGlobal", { body });
     else if (targetId) await command("sendDirect", { recipientId: targetId, body });
     setBody("");
+  };
+  const togglePin = async (contactId: string) => {
+    await command("toggleDirectPin", { targetId: contactId });
   };
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
@@ -679,9 +742,9 @@ function ChatDrawer({ open, onClose, identity, snapshot, command }: {
       <button className={open ? "drawer-scrim open" : "drawer-scrim"} onClick={onClose} aria-label="채팅 닫기" />
       <aside className={open ? "chat-drawer open" : "chat-drawer"} aria-hidden={!open}>
         <div className="chat-head"><h2>채팅</h2><button onClick={onClose} aria-label="닫기">×</button></div>
-        <div className="chat-tabs"><button className={tab === "global" ? "active" : ""} onClick={() => setTab("global")}>전체 채팅</button><button className={tab === "direct" ? "active" : ""} onClick={() => setTab("direct")}>개인 메시지</button></div>
-        {tab === "direct" && !targetId && <div className="people-picker"><input value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="닉네임으로 사용자 검색" />{snapshot.onlinePlayers.filter((player) => player.id !== identity.id && player.nickname.includes(userSearch)).map((player) => <button key={player.id} onClick={() => setTargetId(player.id)}><i /><span>{player.nickname}</span><small>온라인</small></button>)}</div>}
-        {tab === "direct" && targetId && <button className="dm-target" onClick={() => setTargetId(null)}>← {target?.nickname ?? "대화 상대"}</button>}
+        <div className="chat-tabs"><button className={tab === "global" ? "active global" : "global"} onClick={() => setTab("global")}><i />전체 채팅</button><button className={tab === "direct" ? "active direct" : "direct"} onClick={() => setTab("direct")}><i />개인 메시지</button></div>
+        {tab === "direct" && !targetId && <div className="people-picker"><input value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="닉네임으로 사용자 검색" />{!loggedIn && <p className="pin-login-note">📌 대화 상대 고정은 Google 로그인 후 사용할 수 있어요.</p>}{contacts.map((player) => <div className={`person-row ${player.pinned ? "pinned" : ""}`} key={player.id}><button className="person-open" onClick={() => setTargetId(player.id)}><i className={player.online ? "online" : "offline"} /><span>{player.pinned && "📌 "}{player.nickname}</span><small>{player.online ? "온라인" : "오프라인"}</small></button>{loggedIn && <button className="person-pin" title={player.pinned ? "고정 해제" : "대화 상대 고정"} aria-label={`${player.nickname} ${player.pinned ? "고정 해제" : "고정"}`} onClick={() => void togglePin(player.id)}>{player.pinned ? "★" : "☆"}</button>}</div>)}{!contacts.length && <div className="empty-chat compact">검색 결과가 없어요.</div>}</div>}
+        {tab === "direct" && targetId && <div className="dm-target-row"><button className="dm-target" onClick={() => setTargetId(null)}>← {target?.nickname ?? messages.at(-1)?.recipientName ?? messages.at(-1)?.senderName ?? "대화 상대"}</button>{loggedIn && <button className={snapshot.pinnedDirectIds.includes(targetId) ? "dm-pin active" : "dm-pin"} onClick={() => void togglePin(targetId)}>{snapshot.pinnedDirectIds.includes(targetId) ? "★ 고정됨" : "☆ 고정"}</button>}</div>}
         {(tab === "global" || targetId) && <>
           <div className="message-list">{messages.length ? messages.map((message) => <div className={message.senderId === identity.id ? "message own" : "message"} key={message.id}><div><strong>{message.senderId === identity.id ? "나" : message.senderName}</strong><time>{new Date(message.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.body}</p></div>) : <div className="empty-chat">아직 메시지가 없어요.</div>}</div>
           <form className="chat-compose" onSubmit={(event) => { event.preventDefault(); send(); }}><input value={body} onChange={(event) => setBody(event.target.value)} maxLength={200} placeholder="메시지를 입력하세요" /><button aria-label="보내기">➤</button></form>

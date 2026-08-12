@@ -9,6 +9,7 @@ function state() {
     members: { room1: [{ playerId: "player1" }] },
     sessions: {} as Record<string, unknown>,
     messages: [] as unknown[],
+    pinnedDirects: {} as Record<string, string[]>,
     rankings: { players: {}, recordedMatches: [] },
   };
 }
@@ -39,6 +40,13 @@ test("채팅과 닉네임 변경은 로비에 알린다", () => {
   const next = structuredClone(previous);
   next.messages.push({ id: 1, body: "안녕" });
   next.players.player1.nickname = "나래";
+  assert.deepEqual(getStateChangeTopics(previous, next), ["lobby"]);
+});
+
+test("개인 대화 고정 변경은 로비 채널에 알린다", () => {
+  const previous = state();
+  const next = structuredClone(previous);
+  next.pinnedDirects.player1 = ["player2"];
   assert.deepEqual(getStateChangeTopics(previous, next), ["lobby"]);
 });
 

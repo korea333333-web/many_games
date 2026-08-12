@@ -4,6 +4,7 @@ type TopicState = {
   members: Record<string, unknown>;
   sessions: Record<string, unknown>;
   messages: unknown[];
+  pinnedDirects?: Record<string, string[]>;
   rankings?: unknown;
 };
 
@@ -17,6 +18,7 @@ export function getStateChangeTopics(previous: TopicState, next: TopicState) {
     JSON.stringify(previous.rooms) !== JSON.stringify(next.rooms)
     || JSON.stringify(previous.members) !== JSON.stringify(next.members)
     || JSON.stringify(previous.messages) !== JSON.stringify(next.messages)
+    || JSON.stringify(previous.pinnedDirects) !== JSON.stringify(next.pinnedDirects)
     || JSON.stringify(previous.rankings) !== JSON.stringify(next.rankings)
     || JSON.stringify(publicPlayerDirectory(previous)) !== JSON.stringify(publicPlayerDirectory(next))
   ) topics.add("lobby");

@@ -11,6 +11,7 @@ import {
 } from "../games/engine.ts";
 import { isKnownWord } from "./word-dictionary.ts";
 import { getStateChangeTopics } from "./state-change-topics.ts";
+import { canJoinPersistentGoRoom, GO_INACTIVE_EXPIRY_MS, isPersistentGoRoomExpired, latestGoActivityAt } from "./go-room-policy.ts";
 import {
   buildLeaderboard,
   emptyRankingState,
@@ -43,6 +44,8 @@ type RoomRecord = {
   settings: RoomSettings;
   createdAt: string;
   updatedAt: string;
+  reservedPlayerIds?: string[];
+  lastActiveAt?: string;
 };
 
 type MemberRecord = {
@@ -75,6 +78,7 @@ type PlatformState = {
   members: Record<string, MemberRecord[]>;
   sessions: Record<string, SessionRecord>;
   messages: MessageRecord[];
+  pinnedDirects: Record<string, string[]>;
   rankings: RankingState;
   nextMessageId: number;
   lastMaintenanceAt: number;
@@ -93,6 +97,7 @@ type MutationResult<T> = { value: T; changed?: boolean };
 
 const FINISHED_RETURN_DELAY_MS = 3_600;
 const CHESS_FINISHED_RETURN_DELAY_MS = 12_000;
+const GO_FINISHED_RETURN_DELAY_MS = 12_000;
 const ONLINE_WINDOW_MS = 2 * 60_000;
 const HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 const MAINTENANCE_INTERVAL_MS = 15_000;
@@ -108,6 +113,7 @@ function emptyState(): PlatformState {
     members: {},
     sessions: {},
     messages: [],
+    pinnedDirects: {},
     rankings: emptyRankingState(),
     nextMessageId: 1,
     lastMaintenanceAt: 0,
@@ -122,6 +128,9 @@ function normalizeState(value: unknown): PlatformState {
     members: asRecord(state.members) as Record<string, MemberRecord[]>,
     sessions: asRecord(state.sessions) as Record<string, SessionRecord>,
     messages: Array.isArray(state.messages) ? state.messages as MessageRecord[] : [],
+    pinnedDirects: Object.fromEntries(
+      Object.entries(asRecord(state.pinnedDirects)).map(([id, targets]) => [id, Array.isArray(targets) ? targets.filter((target): target is string => typeof target === "string") : []]),
+    ),
     rankings: normalizeRankingState(state.rankings),
     nextMessageId: Math.max(1, Number(state.nextMessageId) || 1),
     lastMaintenanceAt: Number(state.lastMaintenanceAt) || 0,
@@ -288,13 +297,34 @@ function rebalanceRoomSeats(state: PlatformState, roomId: string, gameId: GameId
     .map((member, index) => ({ ...member, role: index < maxPlayers ? "player" : "spectator" }));
 }
 
-function removeMemberFromRoom(state: PlatformState, playerId: string, roomId: string) {
+function isPersistentGoRoom(room: RoomRecord | undefined) {
+  return room?.gameId === "go";
+}
+
+function activeGoPlayerIds(state: PlatformState, roomId: string) {
+  return new Set(roomMembers(state, roomId).map((member) => member.playerId));
+}
+
+function removeMemberFromRoom(state: PlatformState, playerId: string, roomId: string, departedAt = nowIso()) {
   const room = state.rooms[roomId];
   if (!room) return { interrupted: false };
   const membership = roomMembers(state, roomId).find((member) => member.playerId === playerId);
   if (!membership) return { interrupted: false };
 
   const remaining = roomMembers(state, roomId).filter((member) => member.playerId !== playerId);
+  if (isPersistentGoRoom(room) && room.reservedPlayerIds?.includes(playerId)) {
+    const session = state.sessions[roomId];
+    if (!remaining.length && session?.state.phase === "finished") {
+      delete state.members[roomId];
+      delete state.sessions[roomId];
+      delete state.rooms[roomId];
+      return { interrupted: false, saved: false };
+    }
+    state.members[roomId] = remaining;
+    room.lastActiveAt = latestGoActivityAt(room.lastActiveAt, departedAt);
+    room.updatedAt = nowIso();
+    return { interrupted: false, saved: true };
+  }
   if (!remaining.length) {
     delete state.members[roomId];
     delete state.sessions[roomId];
@@ -338,7 +368,11 @@ function runMaintenance(state: PlatformState, now = Date.now()) {
 
   for (const [roomId, session] of Object.entries(state.sessions)) {
     if (session.state.phase === "finished") changed = recordSessionCompletion(state, roomId, session) || changed;
-    const returnDelay = session.state.gameId === "chess" ? CHESS_FINISHED_RETURN_DELAY_MS : FINISHED_RETURN_DELAY_MS;
+    const returnDelay = session.state.gameId === "chess"
+      ? CHESS_FINISHED_RETURN_DELAY_MS
+      : session.state.gameId === "go"
+        ? GO_FINISHED_RETURN_DELAY_MS
+        : FINISHED_RETURN_DELAY_MS;
     if (session.state.phase !== "finished" || now - Date.parse(session.updatedAt) < returnDelay) continue;
     const room = state.rooms[roomId];
     delete state.sessions[roomId];
@@ -359,19 +393,28 @@ function runMaintenance(state: PlatformState, now = Date.now()) {
     for (const member of [...members]) {
       const player = state.players[member.playerId];
       if (!player || Date.parse(player.lastSeen) < staleCutoff) {
-        removeMemberFromRoom(state, member.playerId, roomId);
+        removeMemberFromRoom(state, member.playerId, roomId, player?.lastSeen ?? nowIso(now));
       }
     }
   }
 
   for (const room of Object.values(state.rooms)) {
     if (room.status !== "playing") continue;
+    if (isPersistentGoRoom(room) && state.sessions[room.id]) continue;
     const playerCount = roomMembers(state, room.id).filter((member) => member.role === "player").length;
     if (playerCount >= GAME_BY_ID[room.gameId].minPlayers && state.sessions[room.id]) continue;
     delete state.sessions[room.id];
     room.status = "waiting";
     room.updatedAt = nowIso(now);
     rebalanceRoomSeats(state, room.id, room.gameId);
+  }
+
+
+  for (const [roomId, room] of Object.entries(state.rooms)) {
+    if (!isPersistentGoRoom(room) || !isPersistentGoRoomExpired(room, roomMembers(state, roomId).length, now)) continue;
+    delete state.members[roomId];
+    delete state.sessions[roomId];
+    delete state.rooms[roomId];
   }
   return changed;
 }
@@ -405,8 +448,11 @@ function recordSessionCompletion(state: PlatformState, roomId: string, session: 
   return true;
 }
 
-function makeRoomListItem(state: PlatformState, room: RoomRecord) {
+function makeRoomListItem(state: PlatformState, room: RoomRecord, viewerId?: string | null) {
   const members = roomMembers(state, room.id);
+  const reservedPlayerIds = isPersistentGoRoom(room) ? (room.reservedPlayerIds ?? []) : [];
+  const memberCount = isPersistentGoRoom(room) ? reservedPlayerIds.length : members.length;
+  const lastActiveAt = room.lastActiveAt ?? room.updatedAt;
   return {
     id: room.id,
     title: room.title,
@@ -416,8 +462,16 @@ function makeRoomListItem(state: PlatformState, room: RoomRecord) {
     status: room.status,
     capacity: room.capacity,
     locked: Boolean(room.passwordHash),
-    memberCount: members.length,
-    playerCount: members.filter((member) => member.role === "player").length,
+    memberCount,
+    playerCount: isPersistentGoRoom(room) ? reservedPlayerIds.length : members.filter((member) => member.role === "player").length,
+    onlineCount: members.length,
+    persistent: isPersistentGoRoom(room),
+    reservedForViewer: Boolean(viewerId && reservedPlayerIds.includes(viewerId)),
+    participantLocked: isPersistentGoRoom(room) && reservedPlayerIds.length >= 2,
+    lastActiveAt,
+    expiresAt: isPersistentGoRoom(room) && members.length === 0
+      ? nowIso(Date.parse(lastActiveAt) + GO_INACTIVE_EXPIRY_MS)
+      : null,
     settings: room.settings,
   };
 }
@@ -431,7 +485,7 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
       return b.updatedAt.localeCompare(a.updatedAt);
     })
     .slice(0, 60)
-    .map((room) => makeRoomListItem(state, room));
+    .map((room) => makeRoomListItem(state, room, playerId));
   const onlinePlayers = Object.values(state.players)
     .filter((player) => now - Date.parse(player.lastSeen) <= ONLINE_WINDOW_MS)
     .sort((a, b) => a.nickname.localeCompare(b.nickname, "ko"))
@@ -453,23 +507,52 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
       .slice(-100)
       .map(hydrateMessage)
     : [];
+  const pinnedDirectIds = playerId ? (state.pinnedDirects[playerId] ?? []) : [];
+  const onlineIds = new Set(onlinePlayers.map((player) => player.id));
+  const directContactIds = new Set([
+    ...pinnedDirectIds,
+    ...onlinePlayers.map((player) => player.id),
+    ...directMessages.flatMap((message) => [message.senderId, message.recipientId].filter((id): id is string => Boolean(id))),
+  ]);
+  if (playerId) directContactIds.delete(playerId);
+  const directContacts = [...directContactIds]
+    .map((id) => state.players[id])
+    .filter((player): player is PlayerRecord => Boolean(player))
+    .map((player) => ({
+      id: player.id,
+      nickname: player.nickname,
+      lastSeen: player.lastSeen,
+      online: onlineIds.has(player.id),
+      pinned: pinnedDirectIds.includes(player.id),
+    }))
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.online) - Number(a.online) || a.nickname.localeCompare(b.nickname, "ko"));
 
   let activeRoom = null;
   const room = roomId ? state.rooms[roomId] : undefined;
   if (room && isGameAvailable(room.gameId) && playerId) {
     const membership = roomMembers(state, roomId).find((member) => member.playerId === playerId);
     if (membership) {
-      const members = roomMembers(state, roomId)
-        .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
-        .map((member) => ({
-          id: member.playerId,
-          name: state.players[member.playerId]?.nickname ?? "알 수 없음",
-          role: member.role,
-          joinedAt: member.joinedAt,
-        }));
+      const liveMemberIds = activeGoPlayerIds(state, roomId);
+      const members = isPersistentGoRoom(room)
+        ? (room.reservedPlayerIds ?? []).map((id) => ({
+          id,
+          name: state.players[id]?.nickname ?? "알 수 없음",
+          role: "player" as const,
+          joinedAt: roomMembers(state, roomId).find((member) => member.playerId === id)?.joinedAt ?? room.createdAt,
+          online: liveMemberIds.has(id),
+        }))
+        : roomMembers(state, roomId)
+          .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
+          .map((member) => ({
+            id: member.playerId,
+            name: state.players[member.playerId]?.nickname ?? "알 수 없음",
+            role: member.role,
+            joinedAt: member.joinedAt,
+            online: true,
+          }));
       const session = state.sessions[roomId];
       activeRoom = {
-        ...makeRoomListItem(state, room),
+        ...makeRoomListItem(state, room, playerId),
         members,
         viewerRole: membership.role,
         game: session ? projectGame(session.state, playerId) : null,
@@ -482,6 +565,8 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
     rooms,
     leaderboard: buildLeaderboard(state.rankings, (id) => state.players[id]?.nickname ?? `플레이어${id.slice(-4)}`),
     onlinePlayers,
+    directContacts,
+    pinnedDirectIds,
     globalMessages,
     directMessages,
     activeRoom,
@@ -529,6 +614,7 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
     if (type === "gameAction") return { value: await applyGameAction(state, actor.id, payload) };
     if (type === "sendGlobal") return { value: sendMessage(state, actor.id, null, "global", payload.body) };
     if (type === "sendDirect") return { value: sendMessage(state, actor.id, cleanId(payload.recipientId), "direct", payload.body) };
+    if (type === "toggleDirectPin") return { value: toggleDirectPin(state, actor.id, cleanId(payload.targetId)) };
     throw new Error("지원하지 않는 요청입니다.");
   }, auth, playerId);
   const value = asRecord(result.value);
@@ -548,6 +634,7 @@ async function createRoom(state: PlatformState, hostId: string, payload: JsonRec
   const title = cleanText(payload.title, 30) || `${game.name} 같이 해요`;
   const password = cleanText(payload.password, 40);
   const settings = sanitizeSettings(gameId, payload.settings);
+  if (gameId === "go" && !isAuthenticatedPlayerId(hostId)) throw new Error("바둑의 이어두기 방은 Google 로그인 후 만들 수 있습니다.");
   if (settings.ranked && !isAuthenticatedPlayerId(hostId)) throw new Error("랭크전은 Google 로그인 후 만들 수 있습니다.");
   if (settings.ranked && password) throw new Error("랭크전은 누구나 참가할 수 있는 공개방으로 만들어 주세요.");
   const now = nowIso();
@@ -558,11 +645,12 @@ async function createRoom(state: PlatformState, hostId: string, payload: JsonRec
     gameId,
     hostId,
     status: "waiting",
-    capacity: 10,
+    capacity: gameId === "go" ? 2 : 10,
     passwordHash: password ? await hashText(password) : null,
     settings,
     createdAt: now,
     updatedAt: now,
+    ...(gameId === "go" ? { reservedPlayerIds: [hostId], lastActiveAt: now } : {}),
   };
   state.members[id] = [{ playerId: hostId, role: "player", joinedAt: now }];
   return { ok: true, roomId: id };
@@ -574,6 +662,11 @@ async function joinRoom(state: PlatformState, playerId: string, payload: JsonRec
   if (!room) throw new Error("방을 찾을 수 없습니다.");
   if (!isGameAvailable(room.gameId)) throw new Error("현재 이용할 수 없는 게임의 방입니다.");
   if (room.settings.ranked && !isAuthenticatedPlayerId(playerId)) throw new Error("랭크전은 Google 로그인 후 참가할 수 있습니다.");
+  if (isPersistentGoRoom(room) && !isAuthenticatedPlayerId(playerId)) throw new Error("바둑 이어두기는 Google 로그인 후 참가할 수 있습니다.");
+  const reservedPlayerIds = room.reservedPlayerIds ?? [];
+  if (isPersistentGoRoom(room) && !canJoinPersistentGoRoom(reservedPlayerIds, playerId)) {
+    throw new Error("이 바둑방은 처음 참가한 두 사람만 다시 들어올 수 있습니다.");
+  }
   const existing = roomMembers(state, roomId).find((member) => member.playerId === playerId);
   if (!existing && roomMembers(state, roomId).length >= room.capacity) throw new Error("방이 가득 찼습니다.");
   if (room.passwordHash) {
@@ -581,13 +674,22 @@ async function joinRoom(state: PlatformState, playerId: string, payload: JsonRec
     if (supplied !== room.passwordHash) throw new Error("비밀번호가 맞지 않습니다.");
   }
   leaveOtherRooms(state, playerId, roomId);
-  if (existing) return { ok: true, roomId, role: existing.role };
+  if (existing) {
+    if (isPersistentGoRoom(room)) room.lastActiveAt = nowIso();
+    return { ok: true, roomId, role: existing.role };
+  }
   const playerCount = roomMembers(state, roomId).filter((member) => member.role === "player").length;
-  const role: MemberRole = room.status === "waiting" && playerCount < GAME_BY_ID[room.gameId].maxPlayers
+  const role: MemberRole = isPersistentGoRoom(room) && (room.reservedPlayerIds ?? []).includes(playerId)
     ? "player"
-    : "spectator";
+    : room.status === "waiting" && playerCount < GAME_BY_ID[room.gameId].maxPlayers
+      ? "player"
+      : "spectator";
   state.members[roomId] = [...roomMembers(state, roomId), { playerId, role, joinedAt: nowIso() }];
   room.updatedAt = nowIso();
+  if (isPersistentGoRoom(room)) {
+    if (!reservedPlayerIds.includes(playerId)) room.reservedPlayerIds = [...reservedPlayerIds, playerId];
+    room.lastActiveAt = room.updatedAt;
+  }
   return { ok: true, roomId, role };
 }
 
@@ -599,12 +701,14 @@ function leaveRoom(state: PlatformState, playerId: string, payload: JsonRecord) 
 function startGame(state: PlatformState, playerId: string, payload: JsonRecord) {
   const roomId = cleanText(payload.roomId, 80);
   const room = state.rooms[roomId];
-  if (!room || room.hostId !== playerId) throw new Error("방장만 시작할 수 있습니다.");
+  if (!room || (room.hostId !== playerId && !(isPersistentGoRoom(room) && room.reservedPlayerIds?.includes(playerId)))) throw new Error("방장만 시작할 수 있습니다.");
   if (!isGameAvailable(room.gameId)) throw new Error("현재 이용할 수 없는 게임입니다.");
-  const members = roomMembers(state, roomId)
-    .filter((member) => member.role === "player")
-    .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
-    .map((member) => ({ id: member.playerId, name: state.players[member.playerId]?.nickname ?? "플레이어" }));
+  const members = isPersistentGoRoom(room)
+    ? (room.reservedPlayerIds ?? []).map((id) => ({ id, name: state.players[id]?.nickname ?? "플레이어" }))
+    : roomMembers(state, roomId)
+      .filter((member) => member.role === "player")
+      .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
+      .map((member) => ({ id: member.playerId, name: state.players[member.playerId]?.nickname ?? "플레이어" }));
   const info = GAME_BY_ID[room.gameId];
   if (members.length < info.minPlayers) throw new Error(`최소 ${info.minPlayers}명이 필요합니다.`);
   if (room.settings.ranked && (members.length !== 2 || !members.every((member) => isAuthenticatedPlayerId(member.id)))) {
@@ -622,6 +726,7 @@ function startGame(state: PlatformState, playerId: string, payload: JsonRecord) 
   };
   room.status = "playing";
   room.updatedAt = nowIso();
+  if (isPersistentGoRoom(room)) room.lastActiveAt = room.updatedAt;
   return { ok: true };
 }
 
@@ -653,6 +758,10 @@ async function applyGameAction(state: PlatformState, playerId: string, payload: 
   session.state = next;
   session.revision += 1;
   session.updatedAt = nowIso();
+  if (room && isPersistentGoRoom(room)) {
+    room.lastActiveAt = session.updatedAt;
+    room.updatedAt = session.updatedAt;
+  }
   if (previousPhase !== "finished" && next.phase === "finished") recordSessionCompletion(state, roomId, session);
   return { ok: true, message: next.message };
 }
@@ -678,6 +787,17 @@ function sendMessage(
   state.nextMessageId += 1;
   if (state.messages.length > MAX_MESSAGES) state.messages = state.messages.slice(-MAX_MESSAGES);
   return { ok: true };
+}
+
+function toggleDirectPin(state: PlatformState, playerId: string, targetId: string) {
+  if (!isAuthenticatedPlayerId(playerId)) throw new Error("개인 메시지 고정은 Google 로그인 후 사용할 수 있습니다.");
+  if (playerId === targetId || !state.players[targetId]) throw new Error("고정할 사용자를 찾을 수 없습니다.");
+  const pins = new Set(state.pinnedDirects[playerId] ?? []);
+  const pinned = !pins.has(targetId);
+  if (pinned) pins.add(targetId);
+  else pins.delete(targetId);
+  state.pinnedDirects[playerId] = [...pins].slice(0, 30);
+  return { ok: true, targetId, pinned };
 }
 
 export { emptyState };
