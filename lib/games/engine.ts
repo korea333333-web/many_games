@@ -47,6 +47,7 @@ export type DavinciTile = {
   id: string;
   color: "black" | "white";
   number: number | null;
+  isJoker: boolean;
   revealed: boolean;
 };
 
@@ -111,16 +112,32 @@ function createUnoDeck(seed: number) {
 }
 
 function createDavinciDeck(seed: number) {
-  const tiles: Array<Omit<DavinciTile, "number"> & { number: number }> = [];
+  const tiles: DavinciTile[] = [];
+  let id = 0;
   for (const color of ["black", "white"] as const) {
-    for (let number = 0; number <= 11; number++) tiles.push({ id: `d-${color}-${number}`, color, number, revealed: false });
+    for (let number = 0; number <= 11; number++) tiles.push({ id: `d${id++}`, color, number, isJoker: false, revealed: false });
+    tiles.push({ id: `d${id++}`, color, number: null, isJoker: true, revealed: false });
   }
   return seededShuffle(tiles, seed);
 }
 
-function sortDavinciHand<T extends { color: "black" | "white"; number: number | null }>(hand: T[]) {
-  hand.sort((a, b) => Number(a.number) - Number(b.number) || (a.color === "black" ? -1 : 1));
+function sortDavinciHand<T extends { color: "black" | "white"; number: number | null; isJoker: boolean }>(hand: T[]) {
+  const jokers = hand.filter((tile) => tile.isJoker);
+  const numbers = hand.filter((tile) => !tile.isJoker).sort((a, b) => Number(a.number) - Number(b.number) || (a.color === "black" ? -1 : 1));
+  hand.splice(0, hand.length, ...numbers, ...jokers);
   return hand;
+}
+
+function insertDavinciTile(hand: DavinciTile[], tile: DavinciTile) {
+  if (tile.isJoker) {
+    hand.push(tile);
+    return;
+  }
+  const insertionIndex = hand.findIndex((current) => !current.isJoker && (
+    Number(current.number) > Number(tile.number)
+    || (current.number === tile.number && current.color === "white" && tile.color === "black")
+  ));
+  hand.splice(insertionIndex < 0 ? hand.length : insertionIndex, 0, tile);
 }
 
 function clone<T>(value: T): T {
@@ -289,9 +306,15 @@ export function createGame(
       const deck = createDavinciDeck(seed);
       const count = seated.length === 2 ? 4 : 3;
       const hands: Record<string, DavinciTile[]> = {};
-      for (const player of seated) hands[player.id] = sortDavinciHand(Array.from({ length: count }, () => deck.pop()!));
-      base.state = { hands, deck, pendingTileId: null, pendingPlayerId: null, hasDrawn: false };
-      base.message = `${seated[0]?.name ?? "첫 플레이어"}님, 타일을 뽑으세요.`;
+      const unplacedJokers: Record<string, string[]> = {};
+      for (const player of seated) {
+        hands[player.id] = sortDavinciHand(Array.from({ length: count }, () => deck.pop()!));
+        unplacedJokers[player.id] = hands[player.id].filter((tile) => tile.isJoker).map((tile) => tile.id);
+      }
+      base.state = { hands, deck, pendingTileId: null, pendingPlayerId: null, hasDrawn: false, hasGuessed: false, unplacedJokers };
+      base.message = Object.values(unplacedJokers).some((tileIds) => tileIds.length)
+        ? "조커를 받은 플레이어가 먼저 조커의 위치를 정해주세요."
+        : `${seated[0]?.name ?? "첫 플레이어"}님, 타일을 뽑으세요.`;
       break;
     }
   }
@@ -1254,6 +1277,7 @@ function finishDavinciTurn(game: GameEnvelope) {
   game.state.pendingTileId = null;
   game.state.pendingPlayerId = null;
   game.state.hasDrawn = false;
+  game.state.hasGuessed = false;
   for (let count = 0; count < game.players.length; count++) {
     game.turn = nextIndex(game, game.turn);
     if ((game.state.hands[game.players[game.turn].id] as DavinciTile[]).some((tile) => !tile.revealed)) break;
@@ -1263,18 +1287,43 @@ function finishDavinciTurn(game: GameEnvelope) {
 }
 
 function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
+  if (command.type === "PLACE_JOKER") {
+    const pendingJokers = (game.state.unplacedJokers?.[command.playerId] ?? []) as string[];
+    const tileId = String(command.payload?.tileId ?? "");
+    const position = Number(command.payload?.position);
+    const ownerHand = game.state.hands[command.playerId] as DavinciTile[] | undefined;
+    const currentIndex = ownerHand?.findIndex((tile) => tile.id === tileId) ?? -1;
+    if (!ownerHand || currentIndex < 0 || !pendingJokers.includes(tileId) || !ownerHand[currentIndex].isJoker) return fail(game, "배치할 조커를 찾을 수 없습니다.");
+    if (!Number.isInteger(position) || position < 0 || position > ownerHand.length - 1) return fail(game, "조커를 놓을 위치를 골라주세요.");
+    const [joker] = ownerHand.splice(currentIndex, 1);
+    ownerHand.splice(position, 0, joker);
+    game.state.unplacedJokers[command.playerId] = pendingJokers.filter((id) => id !== tileId);
+    const stillWaiting = Object.values(game.state.unplacedJokers as Record<string, string[]>).some((tileIds) => tileIds.length);
+    game.message = stillWaiting
+      ? "다른 조커의 위치를 정하고 있습니다."
+      : game.state.hasDrawn
+        ? "상대의 숨겨진 타일을 골라 추리하세요."
+        : `${game.players[game.turn].name}님, 타일을 뽑으세요.`;
+    return game;
+  }
+  if (Object.values((game.state.unplacedJokers ?? {}) as Record<string, string[]>).some((tileIds) => tileIds.length)) return fail(game, "먼저 받은 조커의 위치를 정해주세요.");
   if (!assertTurn(game, command.playerId)) return fail(game, "지금은 내 차례가 아닙니다.");
   const hand = game.state.hands[command.playerId] as DavinciTile[];
   if (command.type === "DRAW_TILE") {
     if (game.state.hasDrawn) return fail(game, "이미 타일을 뽑았습니다.");
     const tile = (game.state.deck as DavinciTile[]).pop();
     game.state.hasDrawn = true;
+    game.state.hasGuessed = false;
     if (tile) {
-      hand.push(tile);
-      sortDavinciHand(hand);
+      insertDavinciTile(hand, tile);
       game.state.pendingTileId = tile.id;
       game.state.pendingPlayerId = command.playerId;
-      game.message = "상대의 숨겨진 타일을 골라 숫자를 추리하세요.";
+      if (tile.isJoker) {
+        game.state.unplacedJokers[command.playerId].push(tile.id);
+        game.message = "뽑은 조커를 암호의 원하는 위치에 놓으세요.";
+      } else {
+        game.message = "상대의 숨겨진 타일을 골라 숫자를 추리하세요.";
+      }
     } else {
       game.message = "남은 타일이 없습니다. 바로 상대 숫자를 추리하세요.";
     }
@@ -1282,6 +1331,7 @@ function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
   }
   if (command.type === "END_TURN") {
     if (!game.state.hasDrawn) return fail(game, "먼저 타일을 뽑으세요.");
+    if (!game.state.hasGuessed) return fail(game, "이번 턴에 한 번 이상 추리한 뒤 멈출 수 있습니다.");
     return finishDavinciTurn(game);
   }
   if (command.type !== "GUESS_TILE") return fail(game, "타일을 뽑거나 상대 숫자를 추리하세요.");
@@ -1292,12 +1342,15 @@ function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
   if (targetPlayerId === command.playerId || !game.state.hands[targetPlayerId]) return fail(game, "상대의 타일을 골라주세요.");
   const target = (game.state.hands[targetPlayerId] as DavinciTile[]).find((tile) => tile.id === tileId);
   if (!target || target.revealed) return fail(game, "아직 공개되지 않은 타일을 골라주세요.");
-  if (!Number.isInteger(guessedNumber) || guessedNumber < 0 || guessedNumber > 11) return fail(game, "0부터 11 사이의 숫자를 골라주세요.");
+  if (!Number.isInteger(guessedNumber) || guessedNumber < -1 || guessedNumber > 11) return fail(game, "0부터 11 또는 조커를 골라주세요.");
 
-  if (target.number === guessedNumber) {
+  const guessLabel = guessedNumber === -1 ? "— 조커" : String(guessedNumber);
+
+  if ((target.isJoker && guessedNumber === -1) || (!target.isJoker && target.number === guessedNumber)) {
     target.revealed = true;
+    game.state.hasGuessed = true;
     const targetName = game.players.find((player) => player.id === targetPlayerId)?.name ?? "상대";
-    answerFeedback(game, command, `정답! ${targetName}님의 ${guessedNumber} 타일이 공개됐습니다.`, "correct");
+    answerFeedback(game, command, `정답! ${targetName}님의 ${guessLabel} 타일이 공개됐습니다.`, "correct");
     const alive = davinciAlivePlayers(game);
     if (alive.length <= 1) return finish(game, alive.map((player) => player.id), `${alive[0]?.name ?? "마지막 플레이어"}님이 암호를 지켰습니다!`);
     return game;
@@ -1308,7 +1361,7 @@ function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
   const alive = davinciAlivePlayers(game);
   if (alive.length <= 1) return finish(game, alive.map((player) => player.id), `${alive[0]?.name ?? "마지막 플레이어"}님이 암호를 지켰습니다!`);
   finishDavinciTurn(game);
-  return answerFeedback(game, command, `${guessedNumber}은(는) 오답! 내 타일이 공개되고 턴이 끝났습니다.`);
+  return answerFeedback(game, command, `${guessLabel}은(는) 오답! 내 타일이 공개되고 턴이 끝났습니다.`);
 }
 
 function finish(game: GameEnvelope, winnerIds: string[], message: string) {
@@ -1372,8 +1425,15 @@ export function projectGame(game: GameEnvelope, viewerId: string, now = Date.now
       hands[playerId] = hand.map((tile) => ({
         ...tile,
         number: playerId === viewerId || tile.revealed ? tile.number : null,
+        isJoker: playerId === viewerId || tile.revealed ? tile.isJoker : false,
       }));
     }
+    projected.state.unplacedJokers = Object.fromEntries(
+      Object.entries((projected.state.unplacedJokers ?? {}) as Record<string, string[]>).map(([playerId, tileIds]) => [
+        playerId,
+        playerId === viewerId ? tileIds : tileIds.map(() => "hidden"),
+      ]),
+    );
     projected.state.deck = Array(projected.state.deck.length).fill(null);
     if (projected.state.pendingPlayerId !== viewerId) projected.state.pendingTileId = null;
   }

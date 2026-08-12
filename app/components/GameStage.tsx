@@ -555,14 +555,19 @@ function Yut({ game, playerId, disabled, onAction }: GameViewProps) {
 }
 
 function DavinciTileFace({ tile, selectable = false }: { tile: DavinciTile; selectable?: boolean }) {
-  return <span className={`davinci-tile-face ${tile.color} ${tile.revealed ? "revealed" : ""} ${selectable ? "selectable" : ""}`}><small>{tile.color === "black" ? "B" : "W"}</small><strong>{tile.number ?? "?"}</strong>{tile.revealed && <i>공개</i>}</span>;
+  return <span className={`davinci-tile-face ${tile.color} ${tile.isJoker ? "joker" : ""} ${tile.revealed ? "revealed" : ""} ${selectable ? "selectable" : ""}`}><small>{tile.color === "black" ? "B" : "W"}</small><strong>{tile.isJoker ? "—" : tile.number ?? "?"}</strong>{tile.revealed && <i>공개</i>}</span>;
 }
 
 function DavinciCode({ game, playerId, disabled, onAction }: GameViewProps) {
   const [target, setTarget] = useState<{ playerId: string; tileId: string } | null>(null);
   const hands = game.state.hands as Record<string, DavinciTile[]>;
   const myTurn = game.players[game.turn]?.id === playerId;
-  const canGuess = myTurn && game.state.hasDrawn && game.phase === "playing";
+  const unplacedJokers = (game.state.unplacedJokers ?? {}) as Record<string, string[]>;
+  const myUnplacedJokerId = unplacedJokers[playerId]?.[0] ?? null;
+  const hasPendingJoker = Object.values(unplacedJokers).some((tileIds) => tileIds.length > 0);
+  const myUnplacedJoker = (hands[playerId] ?? []).find((tile) => tile.id === myUnplacedJokerId) ?? null;
+  const placementHand = (hands[playerId] ?? []).filter((tile) => tile.id !== myUnplacedJokerId);
+  const canGuess = myTurn && game.state.hasDrawn && !hasPendingJoker && game.phase === "playing";
   const opponents = game.players.filter((player) => player.id !== playerId);
   const guess = (number: number) => {
     if (!target) return;
@@ -572,9 +577,10 @@ function DavinciCode({ game, playerId, disabled, onAction }: GameViewProps) {
   return (
     <div className="davinci-game">
       <div className="davinci-opponents">{opponents.map((player) => <section key={player.id} className={game.players[game.turn]?.id === player.id ? "active" : ""}><header><b>{player.name}</b><span>{(hands[player.id] ?? []).filter((tile) => tile.revealed).length}/{hands[player.id]?.length ?? 0} 공개</span></header><div>{(hands[player.id] ?? []).map((tile) => <button key={tile.id} disabled={disabled || !canGuess || tile.revealed} className={target?.tileId === tile.id ? "selected" : ""} onClick={() => setTarget({ playerId: player.id, tileId: tile.id })}><DavinciTileFace tile={tile} selectable={canGuess && !tile.revealed} /></button>)}</div></section>)}</div>
-      <div className="davinci-center"><div className="davinci-deck"><span>CODE</span><b>{game.state.deck.length}</b><small>남은 타일</small></div><div className="davinci-actions"><button disabled={disabled || !myTurn || game.state.hasDrawn || game.phase === "finished"} onClick={() => onAction({ type: "DRAW_TILE" })}>타일 뽑기</button><button className="stop" disabled={disabled || !myTurn || !game.state.hasDrawn || game.phase === "finished"} onClick={() => onAction({ type: "END_TURN" })}>추리 멈추기</button></div></div>
-      <section className="davinci-mine"><header><b>내 암호</b><span>검정이 같은 숫자의 흰색보다 앞에 놓입니다.</span></header><div>{(hands[playerId] ?? []).map((tile) => <DavinciTileFace key={tile.id} tile={tile} />)}</div></section>
-      {target && <div className="davinci-picker"><div><b>이 타일의 숫자는?</b><div>{Array.from({ length: 12 }, (_, number) => <button key={number} onClick={() => guess(number)}>{number}</button>)}</div><button className="cancel" onClick={() => setTarget(null)}>취소</button></div></div>}
+      <div className="davinci-center"><div className="davinci-deck"><span>CODE</span><b>{game.state.deck.length}</b><small>남은 타일</small></div><div className="davinci-actions"><button disabled={disabled || !myTurn || game.state.hasDrawn || hasPendingJoker || game.phase === "finished"} onClick={() => onAction({ type: "DRAW_TILE" })}>타일 뽑기</button><button className="stop" disabled={disabled || !myTurn || !game.state.hasDrawn || !game.state.hasGuessed || hasPendingJoker || game.phase === "finished"} onClick={() => onAction({ type: "END_TURN" })}>추리 멈추기</button></div></div>
+      <section className="davinci-mine"><header><b>내 암호</b><span>같은 숫자는 검정이 먼저 · 조커는 원하는 위치에 한 번만 배치</span></header><div>{(hands[playerId] ?? []).map((tile) => <DavinciTileFace key={tile.id} tile={tile} />)}</div></section>
+      {target && <div className="davinci-picker"><div><b>이 타일은 무엇일까요?</b><div>{Array.from({ length: 12 }, (_, number) => <button key={number} onClick={() => guess(number)}>{number}</button>)}<button className="joker-guess" onClick={() => guess(-1)}>— 조커</button></div><button className="cancel" onClick={() => setTarget(null)}>취소</button></div></div>}
+      {myUnplacedJoker && <div className="davinci-picker davinci-joker-placement"><div><b>{myUnplacedJoker.color === "black" ? "검은색" : "흰색"} 조커를 어디에 놓을까요?</b><p>한 번 놓은 조커는 다시 옮길 수 없습니다.</p><div>{Array.from({ length: placementHand.length + 1 }, (_, position) => <button key={position} onClick={() => onAction({ type: "PLACE_JOKER", payload: { tileId: myUnplacedJoker.id, position } })}>{position === 0 ? "맨 앞" : position === placementHand.length ? "맨 뒤" : `${position}번 뒤`}</button>)}</div></div></div>}
     </div>
   );
 }

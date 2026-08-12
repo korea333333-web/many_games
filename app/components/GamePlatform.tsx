@@ -825,16 +825,28 @@ function ChatDrawer({ open, onClose, identity, snapshot, command, loggedIn, onPr
 }) {
   const [tab, setTab] = useState<"global" | "direct">("global");
   const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [targetId, setTargetId] = useState<string | null>(null);
   const [userSearch, setUserSearch] = useState("");
   const target = snapshot.directContacts.find((player) => player.id === targetId);
   const contacts = snapshot.directContacts.filter((player) => player.nickname.includes(userSearch.trim()));
   const messages = tab === "global" ? snapshot.globalMessages : snapshot.directMessages.filter((message) => targetId && ((message.senderId === identity.id && message.recipientId === targetId) || (message.senderId === targetId && message.recipientId === identity.id)));
   const send = async () => {
-    if (!body.trim()) return;
-    if (tab === "global") await command("sendGlobal", { body });
-    else if (targetId) await command("sendDirect", { recipientId: targetId, body });
+    const messageBody = body.trim();
+    const recipientId = targetId;
+    const messageTab = tab;
+    if (!messageBody || sendingRef.current || (messageTab === "direct" && !recipientId)) return;
+    sendingRef.current = true;
+    setSending(true);
     setBody("");
+    try {
+      if (messageTab === "global") await command("sendGlobal", { body: messageBody });
+      else await command("sendDirect", { recipientId, body: messageBody });
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
   };
   const togglePin = async (contactId: string) => {
     await command("toggleDirectPin", { targetId: contactId });
@@ -854,7 +866,7 @@ function ChatDrawer({ open, onClose, identity, snapshot, command, loggedIn, onPr
         {tab === "direct" && targetId && <div className="dm-target-row"><button className="dm-target" onClick={() => setTargetId(null)}>← {target?.nickname ?? messages.at(-1)?.recipientName ?? messages.at(-1)?.senderName ?? "대화 상대"}</button>{loggedIn && <button className={snapshot.pinnedDirectIds.includes(targetId) ? "dm-pin active" : "dm-pin"} onClick={() => void togglePin(targetId)}>{snapshot.pinnedDirectIds.includes(targetId) ? "★ 고정됨" : "☆ 고정"}</button>}</div>}
         {(tab === "global" || targetId) && <>
           <div className="message-list">{messages.length ? messages.map((message) => <div className={`${message.senderId === identity.id ? "message own" : "message"} ${message.deletedAt ? "deleted" : ""}`} key={message.id}><div><button type="button" className="message-sender" onClick={() => onProfile(message.senderId)}>{message.senderId === identity.id ? "나" : message.senderName}</button><AdminBadge role={message.senderAdminRole} /><time>{new Date(message.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</time>{snapshot.adminRole && !message.deletedAt && <button type="button" className="message-delete" onClick={() => command("deleteMessage", { messageId: message.id })}>삭제</button>}</div><p>{message.body}</p></div>) : <div className="empty-chat">아직 메시지가 없어요.</div>}</div>
-          <form className="chat-compose" onSubmit={(event) => { event.preventDefault(); send(); }}><input value={body} onChange={(event) => setBody(event.target.value)} maxLength={200} placeholder="메시지를 입력하세요" /><button aria-label="보내기">➤</button></form>
+          <form className="chat-compose" onSubmit={(event) => { event.preventDefault(); void send(); }}><input value={body} onChange={(event) => setBody(event.target.value)} maxLength={200} disabled={sending} placeholder={sending ? "전송 중…" : "메시지를 입력하세요"} /><button aria-label="보내기" disabled={sending || !body.trim()}>➤</button></form>
         </>}
       </aside>
     </>

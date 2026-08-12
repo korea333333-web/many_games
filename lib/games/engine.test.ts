@@ -461,12 +461,14 @@ test("yut moves from home, captures an opponent and advances the turn", () => {
 test("davinci code hides opponent numbers and resolves wrong guesses", () => {
   let game = createGame("davinci-code", players.slice(0, 2), 23);
   const projected = projectGame(game, "a");
-  assert.equal(typeof projected.state.hands.a[0].number, "number");
-  assert.equal(projected.state.hands.b[0].number, null);
+  const ownNumber = projected.state.hands.a.find((tile: { isJoker: boolean }) => !tile.isJoker);
+  assert.equal(typeof ownNumber.number, "number");
+  assert.ok(projected.state.hands.b.every((tile: { number: number | null; isJoker: boolean; revealed: boolean }) => tile.revealed || (tile.number === null && !tile.isJoker)));
   assert.equal(projected.state.deck[0], null);
 
-  const pending = game.state.hands.a[0];
-  const target = game.state.hands.b[0];
+  const pending = game.state.hands.a.find((tile: { isJoker: boolean }) => !tile.isJoker);
+  const target = game.state.hands.b.find((tile: { isJoker: boolean }) => !tile.isJoker);
+  game.state.unplacedJokers = { a: [], b: [] };
   game.state.hasDrawn = true;
   game.state.pendingTileId = pending.id;
   game.state.pendingPlayerId = "a";
@@ -475,6 +477,58 @@ test("davinci code hides opponent numbers and resolves wrong guesses", () => {
   assert.equal(game.turn, 1);
   assert.match(game.feedback?.text ?? "", /오답/);
   assert.doesNotMatch(game.feedback?.text ?? "", /선택한 타일은/);
+});
+
+test("davinci code includes both jokers and lets each owner place one only once", () => {
+  let game = createGame("davinci-code", players.slice(0, 2), 41);
+  const allTiles = [...game.state.hands.a, ...game.state.hands.b, ...game.state.deck];
+  const jokers = allTiles.filter((tile: { isJoker: boolean }) => tile.isJoker);
+  assert.equal(jokers.length, 2);
+  assert.deepEqual(jokers.map((tile: { color: string }) => tile.color).sort(), ["black", "white"]);
+
+  game.state.hands.a = [
+    { id: "a-zero", color: "black", number: 0, isJoker: false, revealed: false },
+    { id: "a-joker", color: "white", number: null, isJoker: true, revealed: false },
+    { id: "a-ten", color: "white", number: 10, isJoker: false, revealed: false },
+  ];
+  game.state.unplacedJokers = { a: ["a-joker"], b: [] };
+  game = reduceGame(game, { type: "PLACE_JOKER", playerId: "a", payload: { tileId: "a-joker", position: 0 } });
+  assert.deepEqual(game.state.hands.a.map((tile: { id: string }) => tile.id), ["a-joker", "a-zero", "a-ten"]);
+  assert.deepEqual(game.state.unplacedJokers.a, []);
+
+  game = reduceGame(game, { type: "PLACE_JOKER", playerId: "a", payload: { tileId: "a-joker", position: 2 } });
+  assert.deepEqual(game.state.hands.a.map((tile: { id: string }) => tile.id), ["a-joker", "a-zero", "a-ten"]);
+});
+
+test("davinci code requires a first guess before the player may stop", () => {
+  let game = createGame("davinci-code", players.slice(0, 2), 42);
+  game.state.hands = {
+    a: [
+      { id: "a-drawn", color: "black", number: 2, isJoker: false, revealed: false },
+      { id: "a-safe", color: "white", number: 8, isJoker: false, revealed: false },
+    ],
+    b: [
+      { id: "b-target", color: "black", number: 4, isJoker: false, revealed: false },
+      { id: "b-safe", color: "white", number: 9, isJoker: false, revealed: false },
+    ],
+  };
+  game.state.unplacedJokers = { a: [], b: [] };
+  game.state.hasDrawn = true;
+  game.state.hasGuessed = false;
+  game.state.pendingTileId = "a-drawn";
+  game.state.pendingPlayerId = "a";
+
+  game = reduceGame(game, { type: "END_TURN", playerId: "a" });
+  assert.equal(game.turn, 0);
+  assert.match(game.message, /한 번 이상 추리/);
+
+  game = reduceGame(game, { type: "GUESS_TILE", playerId: "a", payload: { targetPlayerId: "b", tileId: "b-target", number: 4 }, now: 200 });
+  assert.equal(game.state.hasGuessed, true);
+  assert.equal(game.turn, 0);
+
+  game = reduceGame(game, { type: "END_TURN", playerId: "a" });
+  assert.equal(game.turn, 1);
+  assert.equal(game.state.hasGuessed, false);
 });
 
 test("a multiplayer game keeps running when enough players remain", () => {

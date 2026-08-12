@@ -142,6 +142,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .chat-compose { display: flex; gap: 8px; padding: 14px; border-top: 1px solid #414655; }
 .chat-compose input, .people-picker input { min-width: 0; flex: 1; height: 48px; border: 1px solid #4b5061; border-radius: 16px; padding: 0 15px; background: #11131b; color: white; }
 .chat-compose button { width: 48px; border: 0; border-radius: 14px; background: var(--blue-soft); color: #143476; font-size: 19px; }
+.chat-compose button:disabled, .chat-compose input:disabled { cursor: wait; opacity: .58; }
 .people-picker { padding: 14px; display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
 .people-picker input { flex: none; margin-bottom: 7px; }
 .people-picker button { height: 54px; display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 10px; border: 0; border-radius: 14px; padding: 0 13px; text-align: left; background: #2b2e38; color: white; }
@@ -606,11 +607,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .davinci-opponents button { flex: none; padding: 0; border: 0; border-radius: 9px; background: transparent; }.davinci-opponents button.selected { box-shadow: 0 0 0 4px var(--lime); }
 .davinci-tile-face { width: 58px; height: 84px; position: relative; display: grid; place-items: center; flex: none; overflow: hidden; border: 2px solid #bcc4d7; border-radius: 9px; background: #f3f0e9; color: #111827; box-shadow: 0 5px 8px rgba(0,0,0,.22); }
 .davinci-tile-face.black { border-color: #6b7280; color: #f8fafc; background: #111318; }.davinci-tile-face.selectable { box-shadow: 0 0 0 2px rgba(180,197,255,.36), 0 5px 8px rgba(0,0,0,.22); }
+.davinci-tile-face.joker strong { font-size: 38px; transform: translateY(-3px); }
 .davinci-tile-face small { position: absolute; left: 5px; top: 4px; color: #9ba3b7; font-size: 7px; }.davinci-tile-face strong { font-size: 28px; }.davinci-tile-face i { position: absolute; right: -17px; bottom: 6px; width: 65px; padding: 2px 0; color: white; background: #e11d48; font-size: 7px; font-style: normal; text-align: center; transform: rotate(-38deg); }
 .davinci-center { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 8px; }
 .davinci-deck { width: 90px; height: 116px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 3px solid #8490aa; border-radius: 12px; background: repeating-linear-gradient(45deg, #141821 0 7px, #242b39 7px 14px); box-shadow: 5px 5px #080a0e; }.davinci-deck span { color: var(--blue-soft); font-size: 9px; letter-spacing: .14em; }.davinci-deck b { font-size: 30px; }.davinci-deck small { color: #9ba3b7; }
 .davinci-actions { display: grid; gap: 7px; }.davinci-actions button { min-width: 130px; min-height: 46px; border: 0; border-radius: 13px; color: #142106; background: var(--lime); font-weight: 900; }.davinci-actions button.stop { color: white; background: #39404f; }
 .davinci-picker > div > div { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 16px 0; }.davinci-picker > div > div button { aspect-ratio: 1; border: 1px solid #566078; border-radius: 9px; color: white; background: #2d3240; font-weight: 900; }.davinci-picker > div > div button:hover { border-color: var(--lime); color: var(--lime); }
+.davinci-picker .joker-guess { grid-column: span 6; aspect-ratio: auto; min-height: 42px; }
+.davinci-joker-placement > div { width: min(520px, calc(100% - 28px)); }.davinci-joker-placement p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }.davinci-joker-placement > div > div { grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); }.davinci-joker-placement > div > div button { aspect-ratio: auto; min-height: 52px; padding: 8px; }
 @keyframes unread-pulse { to { transform: scale(1.16); box-shadow: 0 0 0 6px rgba(251,113,133,.08); } }
 @keyframes timer-pulse { to { transform: scale(1.07); } }
 @keyframes reveal-answer { from { opacity: 0; transform: scale(.98); } }
