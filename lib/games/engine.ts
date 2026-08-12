@@ -311,7 +311,7 @@ export function createGame(
         hands[player.id] = sortDavinciHand(Array.from({ length: count }, () => deck.pop()!));
         unplacedJokers[player.id] = hands[player.id].filter((tile) => tile.isJoker).map((tile) => tile.id);
       }
-      base.state = { hands, deck, pendingTileId: null, pendingPlayerId: null, hasDrawn: false, hasGuessed: false, unplacedJokers };
+      base.state = { hands, deck, pendingTileId: null, pendingPlayerId: null, hasDrawn: false, hasGuessed: false, comboCount: 0, comboEvent: null, unplacedJokers };
       base.message = Object.values(unplacedJokers).some((tileIds) => tileIds.length)
         ? "조커를 받은 플레이어가 먼저 조커의 위치를 정해주세요."
         : `${seated[0]?.name ?? "첫 플레이어"}님, 타일을 뽑으세요.`;
@@ -1278,6 +1278,8 @@ function finishDavinciTurn(game: GameEnvelope) {
   game.state.pendingPlayerId = null;
   game.state.hasDrawn = false;
   game.state.hasGuessed = false;
+  game.state.comboCount = 0;
+  game.state.comboEvent = null;
   for (let count = 0; count < game.players.length; count++) {
     game.turn = nextIndex(game, game.turn);
     if ((game.state.hands[game.players[game.turn].id] as DavinciTile[]).some((tile) => !tile.revealed)) break;
@@ -1314,6 +1316,8 @@ function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
     const tile = (game.state.deck as DavinciTile[]).pop();
     game.state.hasDrawn = true;
     game.state.hasGuessed = false;
+    game.state.comboCount = 0;
+    game.state.comboEvent = null;
     if (tile) {
       insertDavinciTile(hand, tile);
       game.state.pendingTileId = tile.id;
@@ -1349,6 +1353,17 @@ function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
   if ((target.isJoker && guessedNumber === -1) || (!target.isJoker && target.number === guessedNumber)) {
     target.revealed = true;
     game.state.hasGuessed = true;
+    game.state.comboCount = Number(game.state.comboCount ?? 0) + 1;
+    if (game.state.comboCount >= 3) {
+      game.state.comboEvent = {
+        id: `${command.now ?? game.seed}-${command.playerId}-${game.state.comboCount}`,
+        playerId: command.playerId,
+        count: game.state.comboCount,
+        createdAt: command.now ?? game.seed,
+      };
+    } else {
+      game.state.comboEvent = null;
+    }
     const targetName = game.players.find((player) => player.id === targetPlayerId)?.name ?? "상대";
     answerFeedback(game, command, `정답! ${targetName}님의 ${guessLabel} 타일이 공개됐습니다.`, "correct");
     const alive = davinciAlivePlayers(game);

@@ -531,6 +531,41 @@ test("davinci code requires a first guess before the player may stop", () => {
   assert.equal(game.state.hasGuessed, false);
 });
 
+test("davinci code announces three, four and five correct guesses as combos", () => {
+  let game = createGame("davinci-code", players.slice(0, 2), 43);
+  game.state.hands = {
+    a: [
+      { id: "a-drawn", color: "black", number: 1, isJoker: false, revealed: false },
+      { id: "a-safe", color: "white", number: 11, isJoker: false, revealed: false },
+    ],
+    b: Array.from({ length: 6 }, (_, number) => ({
+      id: `b-${number}`,
+      color: number % 2 ? "white" : "black",
+      number,
+      isJoker: false,
+      revealed: false,
+    })),
+  };
+  game.state.unplacedJokers = { a: [], b: [] };
+  game.state.hasDrawn = true;
+  game.state.hasGuessed = false;
+  game.state.comboCount = 0;
+  game.state.comboEvent = null;
+  game.state.pendingTileId = "a-drawn";
+  game.state.pendingPlayerId = "a";
+
+  for (let number = 0; number < 5; number++) {
+    game = reduceGame(game, { type: "GUESS_TILE", playerId: "a", payload: { targetPlayerId: "b", tileId: `b-${number}`, number }, now: 300 + number });
+    assert.equal(game.state.comboCount, number + 1);
+    if (number < 2) assert.equal(game.state.comboEvent, null);
+    else assert.equal(game.state.comboEvent.count, number + 1);
+  }
+
+  game = reduceGame(game, { type: "END_TURN", playerId: "a" });
+  assert.equal(game.state.comboCount, 0);
+  assert.equal(game.state.comboEvent, null);
+});
+
 test("a multiplayer game keeps running when enough players remain", () => {
   const game = createGame("word-chain", players.slice(0, 3), 11);
   const next = removePlayerFromGame(game, "b");

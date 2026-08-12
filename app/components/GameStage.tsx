@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { getChessLegalTargets, getChessViewIndexes, reduceGame, type DavinciTile, type GameCommand, type GameEnvelope, type UnoCard, type UnoColor } from "@/lib/games/engine";
 import { GAME_BY_ID, type GameId } from "@/lib/games/catalog";
 
@@ -56,6 +56,7 @@ export function GameStage({ game, revision, playerId, viewerRole, onAction }: Pr
         {shownGame.gameId === "yut" && <Yut game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
         {shownGame.gameId === "davinci-code" && <DavinciCode game={shownGame} playerId={playerId} disabled={spectator} onAction={runAction} />}
       </div>
+      {shownGame.gameId === "davinci-code" && shownGame.state.comboEvent && <DavinciComboEffect game={shownGame} />}
       {shownGame.feedback && <AnswerFeedback game={shownGame} playerId={playerId} />}
       {shownGame.phase === "finished" && !inspectingFinalBoard && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} onInspectBoard={hasInspectibleBoard ? () => setInspectedBoardSeed(shownGame.seed) : undefined} />}
       {inspectingFinalBoard && (
@@ -64,6 +65,24 @@ export function GameStage({ game, revision, playerId, viewerRole, onAction }: Pr
           <button type="button" onClick={() => setInspectedBoardSeed(null)}>결과 다시 보기</button>
         </div>
       )}
+    </div>
+  );
+}
+
+function DavinciComboEffect({ game }: { game: GameEnvelope }) {
+  const combo = game.state.comboEvent as { id: string; playerId: string; count: number };
+  const player = game.players.find((item) => item.id === combo.playerId);
+  const tier = combo.count >= 5 ? "legendary" : combo.count === 4 ? "super" : "triple";
+  return (
+    <div key={combo.id} className={`davinci-combo ${tier}`} role="status" aria-live="assertive">
+      <div className="davinci-combo-flash" />
+      <div className="davinci-combo-burst" aria-hidden="true">{Array.from({ length: 18 }, (_, index) => <i key={index} style={{ "--combo-ray": index } as CSSProperties} />)}</div>
+      <div className="davinci-combo-code" aria-hidden="true">{Array.from({ length: 8 }, (_, index) => <span key={index}>{(index * 7 + combo.count * 3) % 12}</span>)}</div>
+      <div className="davinci-combo-title">
+        <small>{player?.name ?? "플레이어"} · CODE BREAK</small>
+        <strong><b>{combo.count}</b> COMBO!</strong>
+        <p>{combo.count >= 5 ? "암호가 완전히 무너집니다!" : combo.count === 4 ? "추리가 멈추지 않습니다!" : "연속 추리 성공!"}</p>
+      </div>
     </div>
   );
 }
