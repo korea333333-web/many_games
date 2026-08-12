@@ -944,7 +944,8 @@ function reduceUno(game: GameEnvelope, command: GameCommand) {
     game.state.pendingDrawKind = card.kind;
     game.turn = nextIndex(game, game.turn, 1, game.state.direction);
     const response = card.kind === "wild4" ? "+4만 낼 수 있어요." : "+2 또는 +4를 낼 수 있어요.";
-    game.message = `${game.players[game.turn].name}님에게 +${game.state.pendingDraw} 누적! ${response}`;
+    const colorChange = card.kind === "wild4" ? ` 선택 색: ${unoColorName(game.state.currentColor)}.` : "";
+    game.message = `${game.players[game.turn].name}님에게 +${game.state.pendingDraw} 누적!${colorChange} ${response}`;
     return game;
   }
 
@@ -1082,11 +1083,10 @@ function reduceDavinciCode(game: GameEnvelope, command: GameCommand) {
 
   const pending = hand.find((tile) => tile.id === game.state.pendingTileId);
   if (pending) pending.revealed = true;
-  const actual = target.number;
   const alive = davinciAlivePlayers(game);
   if (alive.length <= 1) return finish(game, alive.map((player) => player.id), `${alive[0]?.name ?? "마지막 플레이어"}님이 암호를 지켰습니다!`);
   finishDavinciTurn(game);
-  return answerFeedback(game, command, `${guessedNumber}은(는) 오답! 선택한 타일은 ${actual}이었습니다.`);
+  return answerFeedback(game, command, `${guessedNumber}은(는) 오답! 내 타일이 공개되고 턴이 끝났습니다.`);
 }
 
 function finish(game: GameEnvelope, winnerIds: string[], message: string) {

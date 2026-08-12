@@ -474,13 +474,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .uno-card-face.green { background: #16a34a; }
 .uno-card-face.blue { background: #2563eb; }
 .uno-card-face.wild { background: conic-gradient(#dc2626 0 25%, #eab308 0 50%, #16a34a 0 75%, #2563eb 0); }
+.uno-card-face.chosen-wild { isolation: isolate; }
+.uno-card-face.chosen-wild::before { content: ""; position: absolute; inset: -35%; z-index: 1; opacity: .3; background: conic-gradient(from 25deg, transparent, rgba(255,255,255,.9), transparent 24%, rgba(255,255,255,.65), transparent 52%); animation: uno-color-shine .68s ease-out both; }
+.uno-card-face.color-changing { animation: uno-color-change .58s cubic-bezier(.18,.9,.25,1.18) both; }
 .uno-card-face small { position: absolute; z-index: 2; left: 7px; top: 6px; color: white; font-size: 7px; font-weight: 950; text-shadow: 0 1px 2px #111; }
 .uno-card-face strong { position: relative; z-index: 2; color: #111827; font-size: 38px; font-style: italic; text-shadow: 0 1px white; transform: rotate(-7deg); }
+.uno-wild-mark { position: absolute; right: 7px; bottom: 6px; z-index: 2; color: white; font-size: 11px; font-style: normal; text-shadow: 0 1px 3px rgba(0,0,0,.75); }
 .uno-card-face.compact { width: 74px; height: 104px; }
 .uno-card-face.compact strong { font-size: 28px; }
 .uno-current-color { position: absolute; right: 18px; bottom: 15px; display: flex; align-items: center; gap: 6px; color: #d4d8e4; font-size: 10px; font-weight: 850; }
 .uno-current-color i { width: 13px; height: 13px; border-radius: 50%; box-shadow: 0 0 0 3px rgba(255,255,255,.12); }
 .uno-current-color.red i { background: #ef4444; }.uno-current-color.yellow i { background: #facc15; }.uno-current-color.green i { background: #22c55e; }.uno-current-color.blue i { background: #3b82f6; }
+@keyframes uno-color-change { 0% { opacity: .35; transform: rotateY(82deg) scale(.86); filter: saturate(1.8) brightness(1.45); } 58% { transform: rotateY(-9deg) scale(1.08); } 100% { opacity: 1; transform: rotateY(0) scale(1); filter: none; } }
+@keyframes uno-color-shine { from { transform: rotate(-70deg) scale(.5); opacity: .9; } to { transform: rotate(80deg) scale(1.25); opacity: 0; } }
 .uno-my-area { padding: 12px 13px 8px; border-radius: 18px; background: #272a33; }
 .uno-my-area > div:first-child { display: flex; justify-content: space-between; margin-bottom: 9px; }
 .uno-my-area small { color: var(--lime); }

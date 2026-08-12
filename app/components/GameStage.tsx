@@ -404,9 +404,12 @@ function unoCardText(card: UnoCard) {
   return ({ skip: "⊘", reverse: "↻", draw2: "+2", wild: "◇", wild4: "+4" } as Record<string, string>)[card.kind];
 }
 
-function UnoCardFace({ card, compact = false }: { card: UnoCard; compact?: boolean }) {
-  const color = card.color ?? "wild";
-  return <span className={`uno-card-face ${color} ${compact ? "compact" : ""}`}><small>{card.color ? UNO_COLOR_NAMES[card.color] : "WILD"}</small><strong>{unoCardText(card)}</strong></span>;
+function UnoCardFace({ card, compact = false, chosenColor, animateColor = false }: {
+  card: UnoCard; compact?: boolean; chosenColor?: UnoColor; animateColor?: boolean;
+}) {
+  const displayColor = card.color ?? chosenColor ?? "wild";
+  const isChosenWild = !card.color && Boolean(chosenColor);
+  return <span className={`uno-card-face ${displayColor} ${compact ? "compact" : ""} ${isChosenWild ? "chosen-wild" : ""} ${animateColor ? "color-changing" : ""}`}><small>{isChosenWild ? `WILD → ${UNO_COLOR_NAMES[chosenColor!]}` : card.color ? UNO_COLOR_NAMES[card.color] : "WILD"}</small><strong>{unoCardText(card)}</strong>{isChosenWild && <i className="uno-wild-mark" aria-hidden="true">◆</i>}</span>;
 }
 
 function Uno({ game, playerId, disabled, onAction }: GameViewProps) {
@@ -435,7 +438,7 @@ function Uno({ game, playerId, disabled, onAction }: GameViewProps) {
       <div className="uno-table">
         {pendingDraw > 0 && <div className="uno-stack-alert" role="status"><span>누적 공격</span><strong>+{pendingDraw}</strong><small>{pendingDrawKind === "wild4" ? "+4만 이어낼 수 있어요" : "+2 또는 +4로 이어낼 수 있어요"}</small></div>}
         <button className={pendingDraw ? "uno-draw-pile penalty" : "uno-draw-pile"} disabled={disabled || !myTurn || game.phase === "finished"} onClick={() => onAction({ type: "DRAW_CARD" })}><span>{pendingDraw ? "TAKE" : "DRAW"}</span><b>{pendingDraw ? `+${pendingDraw}` : game.state.drawPile.length}</b><small>{pendingDraw ? `${pendingDraw}장 받기` : "한 장 뽑기"}</small></button>
-        <div className="uno-discard">{top && <UnoCardFace card={top} />}</div>
+        <div className="uno-discard">{top && <UnoCardFace key={`${top.id}-${game.state.currentColor}`} card={top} chosenColor={!top.color ? game.state.currentColor as UnoColor : undefined} animateColor={!top.color} />}</div>
         <div className={`uno-current-color ${game.state.currentColor}`}><i />{UNO_COLOR_NAMES[game.state.currentColor as UnoColor]}</div>
       </div>
       <div className="uno-my-area">

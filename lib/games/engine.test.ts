@@ -366,6 +366,8 @@ test("uno stacks +2 with +2 or +4, while +4 only accepts +4", () => {
   game = reduceGame(game, { type: "PLAY_CARD", playerId: "c", payload: { cardId: "c-plus4", color: "green" } });
   assert.equal(game.state.pendingDraw, 8);
   assert.equal(game.state.pendingDrawKind, "wild4");
+  assert.equal(game.state.currentColor, "green");
+  assert.match(game.message, /선택 색: 초록/);
   assert.equal(game.turn, 3);
 
   const dHandBefore = game.state.hands.d.length;
@@ -376,6 +378,20 @@ test("uno stacks +2 with +2 or +4, while +4 only accepts +4", () => {
   assert.equal(game.state.hands.d.length, dHandBefore + 8);
   assert.equal(game.state.pendingDraw, 0);
   assert.equal(game.turn, 0);
+});
+
+test("uno wild card changes the active color", () => {
+  let game = createGame("uno", players.slice(0, 2), 25);
+  game.state.currentColor = "red";
+  game.state.discardPile = [{ id: "top", color: "red", kind: "number", value: 3 }];
+  game.state.hands.a = [
+    { id: "a-wild", color: null, kind: "wild" },
+    { id: "a-safe", color: "red", kind: "number", value: 5 },
+  ];
+
+  game = reduceGame(game, { type: "PLAY_CARD", playerId: "a", payload: { cardId: "a-wild", color: "blue" } });
+  assert.equal(game.state.currentColor, "blue");
+  assert.match(game.message, /파랑/);
 });
 
 test("yut moves from home, captures an opponent and advances the turn", () => {
@@ -405,6 +421,7 @@ test("davinci code hides opponent numbers and resolves wrong guesses", () => {
   assert.equal(game.state.hands.a.find((tile: { id: string }) => tile.id === pending.id).revealed, true);
   assert.equal(game.turn, 1);
   assert.match(game.feedback?.text ?? "", /오답/);
+  assert.doesNotMatch(game.feedback?.text ?? "", /선택한 타일은/);
 });
 
 test("a multiplayer game keeps running when enough players remain", () => {
