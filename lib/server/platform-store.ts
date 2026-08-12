@@ -21,6 +21,19 @@ import {
   recordCompletedMatch,
   type RankingState,
 } from "../rankings.ts";
+import {
+  COSMETIC_CATALOG,
+  adminRoleFor,
+  cosmeticById,
+  createDefaultProfile,
+  emptyModerationState,
+  normalizeModerationState,
+  normalizeProfiles,
+  type AdminRole,
+  type FeedbackRecord,
+  type ModerationState,
+  type ProfileRecord,
+} from "../community.ts";
 
 type JsonRecord = Record<string, unknown>;
 type MemberRole = "player" | "spectator";
@@ -70,6 +83,8 @@ type MessageRecord = {
   scope: "global" | "direct";
   body: string;
   createdAt: string;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 type PlatformState = {
@@ -80,6 +95,9 @@ type PlatformState = {
   messages: MessageRecord[];
   pinnedDirects: Record<string, string[]>;
   rankings: RankingState;
+  profiles: Record<string, ProfileRecord>;
+  moderation: ModerationState;
+  feedback: FeedbackRecord[];
   nextMessageId: number;
   lastMaintenanceAt: number;
 };
@@ -115,6 +133,9 @@ function emptyState(): PlatformState {
     messages: [],
     pinnedDirects: {},
     rankings: emptyRankingState(),
+    profiles: {},
+    moderation: emptyModerationState(),
+    feedback: [],
     nextMessageId: 1,
     lastMaintenanceAt: 0,
   };
@@ -132,6 +153,9 @@ function normalizeState(value: unknown): PlatformState {
       Object.entries(asRecord(state.pinnedDirects)).map(([id, targets]) => [id, Array.isArray(targets) ? targets.filter((target): target is string => typeof target === "string") : []]),
     ),
     rankings: normalizeRankingState(state.rankings),
+    profiles: normalizeProfiles(state.profiles),
+    moderation: normalizeModerationState(state.moderation),
+    feedback: Array.isArray(state.feedback) ? state.feedback as FeedbackRecord[] : [],
     nextMessageId: Math.max(1, Number(state.nextMessageId) || 1),
     lastMaintenanceAt: Number(state.lastMaintenanceAt) || 0,
   };
@@ -262,11 +286,62 @@ async function hashText(value: string) {
     .join("");
 }
 
+async function hashAdminPassword(value: string) {
+  const pepper = String(process.env.GAME_STATE_SECRET ?? "many-games-admin");
+  return hashText(`${pepper}:${value}`);
+}
+
+function ensureProfile(state: PlatformState, playerId: string) {
+  if (!isAuthenticatedPlayerId(playerId)) return null;
+  state.profiles[playerId] ??= createDefaultProfile(nowIso());
+  return state.profiles[playerId];
+}
+
+function requireLogin(playerId: string) {
+  if (!isAuthenticatedPlayerId(playerId)) throw new Error("Google 로그인 후 사용할 수 있습니다.");
+}
+
+function requireAdmin(state: PlatformState, playerId: string, masterOnly = false): AdminRole {
+  requireLogin(playerId);
+  const role = adminRoleFor(state.moderation, playerId);
+  if (!role || (masterOnly && role !== "master")) throw new Error(masterOnly ? "1짱 관리자만 사용할 수 있습니다." : "관리자 권한이 필요합니다.");
+  return role;
+}
+
+function publicCareer(state: PlatformState, playerId: string) {
+  const career = state.rankings.players[playerId];
+  const total = Object.values(career?.games ?? {}).reduce((sum, record) => ({
+    played: sum.played + record.played,
+    wins: sum.wins + record.wins,
+    losses: sum.losses + record.losses,
+    draws: sum.draws + record.draws,
+  }), { played: 0, wins: 0, losses: 0, draws: 0 });
+  return { total, games: career?.games ?? {}, ranked: career?.ranked ?? {} };
+}
+
+function makePublicProfile(state: PlatformState, playerId: string) {
+  const player = state.players[playerId];
+  if (!player) return null;
+  const profile = state.profiles[playerId];
+  return {
+    id: playerId,
+    nickname: player.nickname,
+    createdAt: player.createdAt,
+    updatedAt: profile?.updatedAt ?? player.createdAt,
+    statusMessage: profile?.statusMessage ?? "",
+    coins: profile?.coins ?? 0,
+    equipped: profile?.equipped ?? {},
+    adminRole: adminRoleFor(state.moderation, playerId),
+    career: publicCareer(state, playerId),
+  };
+}
+
 function upsertPlayer(state: PlatformState, playerIdRaw: unknown, nicknameRaw: unknown, force = false) {
   const id = cleanId(playerIdRaw);
   const requested = cleanText(nicknameRaw, 14) || `플레이어${id.slice(-4)}`;
   const now = Date.now();
   const existing = state.players[id];
+  const profileMissing = isAuthenticatedPlayerId(id) && !state.profiles[id];
   const duplicate = Object.values(state.players).some(
     (player) => player.id !== id && player.nickname === requested,
   );
@@ -283,7 +358,8 @@ function upsertPlayer(state: PlatformState, playerIdRaw: unknown, nicknameRaw: u
       createdAt: existing?.createdAt ?? nowIso(now),
     };
   }
-  return { player: state.players[id] ?? { id, nickname, lastSeen: nowIso(now), createdAt: nowIso(now) }, changed: shouldWrite };
+  if (profileMissing) ensureProfile(state, id);
+  return { player: state.players[id] ?? { id, nickname, lastSeen: nowIso(now), createdAt: nowIso(now) }, changed: shouldWrite || profileMissing };
 }
 
 function roomMembers(state: PlatformState, roomId: string) {
@@ -435,7 +511,7 @@ function recordSessionCompletion(state: PlatformState, roomId: string, session: 
   if (session.state.phase !== "finished" || session.resultRecorded) return false;
   const room = state.rooms[roomId];
   const matchId = session.matchId ?? crypto.randomUUID().replaceAll("-", "");
-  recordCompletedMatch(state.rankings, {
+  const recorded = recordCompletedMatch(state.rankings, {
     matchId,
     gameId: session.state.gameId,
     playerIds: session.state.players.map((player) => player.id),
@@ -443,6 +519,15 @@ function recordSessionCompletion(state: PlatformState, roomId: string, session: 
     ranked: Boolean(room?.settings.ranked),
     completedAt: session.updatedAt,
   });
+  if (recorded) {
+    for (const winnerId of session.state.winnerIds.filter(isAuthenticatedPlayerId)) {
+      const profile = ensureProfile(state, winnerId);
+      if (profile) {
+        profile.coins += 30;
+        profile.updatedAt = session.updatedAt;
+      }
+    }
+  }
   session.matchId = matchId;
   session.resultRecorded = true;
   return true;
@@ -490,12 +575,14 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
     .filter((player) => now - Date.parse(player.lastSeen) <= ONLINE_WINDOW_MS)
     .sort((a, b) => a.nickname.localeCompare(b.nickname, "ko"))
     .slice(0, 100)
-    .map(({ id, nickname, lastSeen }) => ({ id, nickname, lastSeen }));
+    .map(({ id, nickname, lastSeen }) => ({ id, nickname, lastSeen, adminRole: adminRoleFor(state.moderation, id) }));
 
   const hydrateMessage = (message: MessageRecord) => ({
     ...message,
     senderName: state.players[message.senderId]?.nickname ?? "알 수 없음",
     recipientName: message.recipientId ? state.players[message.recipientId]?.nickname : undefined,
+    senderAdminRole: adminRoleFor(state.moderation, message.senderId),
+    body: message.deletedAt ? "관리자에 의해 삭제된 메시지입니다." : message.body,
   });
   const globalMessages = state.messages
     .filter((message) => message.scope === "global")
@@ -512,6 +599,7 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
   const directContactIds = new Set([
     ...pinnedDirectIds,
     ...onlinePlayers.map((player) => player.id),
+    ...Object.keys(state.players),
     ...directMessages.flatMap((message) => [message.senderId, message.recipientId].filter((id): id is string => Boolean(id))),
   ]);
   if (playerId) directContactIds.delete(playerId);
@@ -524,8 +612,10 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
       lastSeen: player.lastSeen,
       online: onlineIds.has(player.id),
       pinned: pinnedDirectIds.includes(player.id),
+      adminRole: adminRoleFor(state.moderation, player.id),
     }))
-    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.online) - Number(a.online) || a.nickname.localeCompare(b.nickname, "ko"));
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.online) - Number(a.online) || a.nickname.localeCompare(b.nickname, "ko"))
+    .slice(0, 200);
 
   let activeRoom = null;
   const room = roomId ? state.rooms[roomId] : undefined;
@@ -540,6 +630,7 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
           role: "player" as const,
           joinedAt: roomMembers(state, roomId).find((member) => member.playerId === id)?.joinedAt ?? room.createdAt,
           online: liveMemberIds.has(id),
+          adminRole: adminRoleFor(state.moderation, id),
         }))
         : roomMembers(state, roomId)
           .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
@@ -549,6 +640,7 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
             role: member.role,
             joinedAt: member.joinedAt,
             online: true,
+            adminRole: adminRoleFor(state.moderation, member.playerId),
           }));
       const session = state.sessions[roomId];
       activeRoom = {
@@ -561,6 +653,21 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
     }
   }
 
+  const viewerAdminRole = playerId ? adminRoleFor(state.moderation, playerId) : null;
+  const playerDirectory = Object.values(state.players)
+    .sort((left, right) => right.lastSeen.localeCompare(left.lastSeen))
+    .slice(0, 200)
+    .map((player) => makePublicProfile(state, player.id))
+    .filter((profile): profile is NonNullable<ReturnType<typeof makePublicProfile>> => Boolean(profile));
+  const viewerWarnings = playerId
+    ? state.moderation.warnings.filter((warning) => warning.playerId === playerId).slice(-10)
+    : [];
+  const feedback = viewerAdminRole
+    ? state.feedback.slice(-200).reverse().map((item) => ({ ...item, nickname: state.players[item.playerId]?.nickname ?? "알 수 없음" }))
+    : playerId
+      ? state.feedback.filter((item) => item.playerId === playerId).slice(-20).reverse()
+      : [];
+
   return {
     rooms,
     leaderboard: buildLeaderboard(state.rankings, (id) => state.players[id]?.nickname ?? `플레이어${id.slice(-4)}`),
@@ -571,6 +678,19 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
     directMessages,
     activeRoom,
     games: GAME_CATALOG,
+    playerDirectory,
+    viewerProfile: playerId ? makePublicProfile(state, playerId) : null,
+    viewerInventoryIds: playerId ? (state.profiles[playerId]?.inventoryIds ?? []) : [],
+    cosmetics: COSMETIC_CATALOG,
+    adminRole: viewerAdminRole,
+    viewerWarnings,
+    ban: playerId ? state.moderation.bans[playerId] ?? null : null,
+    moderationPlayers: viewerAdminRole ? playerDirectory.map((profile) => ({
+      ...profile,
+      warningCount: state.moderation.warnings.filter((warning) => warning.playerId === profile.id).length,
+      banned: Boolean(state.moderation.bans[profile.id]),
+    })) : [],
+    feedback,
     serverTime: nowIso(now),
   };
 }
@@ -606,7 +726,9 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
     const actor = upsertPlayer(state, playerId, body.nickname, true).player;
     runMaintenance(state);
 
-    if (type === "heartbeat" || type === "setNickname") return { value: { ok: true, player: actor } };
+    if (type === "heartbeat") return { value: { ok: true, player: actor } };
+    if (state.moderation.bans[actor.id]) throw new Error(`이용이 제한된 계정입니다: ${state.moderation.bans[actor.id].reason}`);
+    if (type === "setNickname") return { value: { ok: true, player: actor } };
     if (type === "createRoom") return { value: await createRoom(state, actor.id, payload) };
     if (type === "joinRoom") return { value: await joinRoom(state, actor.id, payload) };
     if (type === "leaveRoom") return { value: leaveRoom(state, actor.id, payload) };
@@ -615,6 +737,17 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
     if (type === "sendGlobal") return { value: sendMessage(state, actor.id, null, "global", payload.body) };
     if (type === "sendDirect") return { value: sendMessage(state, actor.id, cleanId(payload.recipientId), "direct", payload.body) };
     if (type === "toggleDirectPin") return { value: toggleDirectPin(state, actor.id, cleanId(payload.targetId)) };
+    if (type === "claimMasterAdmin") return { value: await claimMasterAdmin(state, actor.id, payload.password) };
+    if (type === "changeAdminPassword") return { value: await changeAdminPassword(state, actor.id, payload.currentPassword, payload.newPassword) };
+    if (type === "setSecondaryAdmin") return { value: setSecondaryAdmin(state, actor.id, payload) };
+    if (type === "warnPlayer") return { value: warnPlayer(state, actor.id, payload) };
+    if (type === "setPlayerBan") return { value: setPlayerBan(state, actor.id, payload) };
+    if (type === "deleteMessage") return { value: deleteMessage(state, actor.id, payload) };
+    if (type === "acknowledgeWarning") return { value: acknowledgeWarning(state, actor.id, payload) };
+    if (type === "updateProfile") return { value: updateProfile(state, actor.id, payload) };
+    if (type === "purchaseCosmetic") return { value: purchaseCosmetic(state, actor.id, payload) };
+    if (type === "submitFeedback") return { value: submitFeedback(state, actor.id, payload) };
+    if (type === "resolveFeedback") return { value: resolveFeedback(state, actor.id, payload) };
     throw new Error("지원하지 않는 요청입니다.");
   }, auth, playerId);
   const value = asRecord(result.value);
@@ -798,6 +931,148 @@ function toggleDirectPin(state: PlatformState, playerId: string, targetId: strin
   else pins.delete(targetId);
   state.pinnedDirects[playerId] = [...pins].slice(0, 30);
   return { ok: true, targetId, pinned };
+}
+
+async function claimMasterAdmin(state: PlatformState, playerId: string, rawPassword: unknown) {
+  requireLogin(playerId);
+  const password = cleanText(rawPassword, 64);
+  const expected = state.moderation.passwordHash ?? await hashAdminPassword(String(process.env.INITIAL_ADMIN_PASSWORD ?? "1111"));
+  if (!password || await hashAdminPassword(password) !== expected) throw new Error("관리자 비밀번호가 맞지 않습니다.");
+  const previousMasterId = state.moderation.masterId;
+  state.moderation.masterId = playerId;
+  state.moderation.passwordHash = expected;
+  state.moderation.secondaryAdminIds = state.moderation.secondaryAdminIds.filter((id) => id !== playerId && id !== previousMasterId);
+  return { ok: true, transferred: Boolean(previousMasterId && previousMasterId !== playerId), message: "1짱 관리자 권한이 이 계정으로 이전되었습니다." };
+}
+
+async function changeAdminPassword(state: PlatformState, playerId: string, currentRaw: unknown, nextRaw: unknown) {
+  requireAdmin(state, playerId, true);
+  const current = cleanText(currentRaw, 64);
+  const next = cleanText(nextRaw, 64);
+  if (next.length < 4) throw new Error("새 비밀번호는 4글자 이상이어야 합니다.");
+  const expected = state.moderation.passwordHash ?? await hashAdminPassword(String(process.env.INITIAL_ADMIN_PASSWORD ?? "1111"));
+  if (await hashAdminPassword(current) !== expected) throw new Error("현재 관리자 비밀번호가 맞지 않습니다.");
+  state.moderation.passwordHash = await hashAdminPassword(next);
+  return { ok: true, message: "관리자 비밀번호를 변경했습니다." };
+}
+
+function setSecondaryAdmin(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireAdmin(state, playerId, true);
+  const targetId = cleanId(payload.targetId);
+  requireLogin(targetId);
+  if (!state.players[targetId]) throw new Error("플레이어를 찾을 수 없습니다.");
+  if (targetId === playerId) throw new Error("1짱 관리자는 이미 모든 권한을 가지고 있습니다.");
+  const enabled = payload.enabled === true;
+  const ids = new Set(state.moderation.secondaryAdminIds);
+  if (enabled) ids.add(targetId);
+  else ids.delete(targetId);
+  state.moderation.secondaryAdminIds = [...ids].slice(0, 30);
+  return { ok: true, message: enabled ? "2짱 관리자로 지정했습니다." : "2짱 관리자 권한을 해제했습니다." };
+}
+
+function warnPlayer(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireAdmin(state, playerId);
+  const targetId = cleanId(payload.targetId);
+  const message = cleanText(payload.message, 120);
+  if (!state.players[targetId]) throw new Error("플레이어를 찾을 수 없습니다.");
+  if (!message) throw new Error("경고 사유를 입력해 주세요.");
+  state.moderation.warnings.push({
+    id: crypto.randomUUID().replaceAll("-", ""),
+    playerId: targetId,
+    issuerId: playerId,
+    message,
+    createdAt: nowIso(),
+    acknowledgedAt: null,
+  });
+  state.moderation.warnings = state.moderation.warnings.slice(-500);
+  return { ok: true, message: "플레이어에게 경고를 보냈습니다." };
+}
+
+function setPlayerBan(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireAdmin(state, playerId, true);
+  const targetId = cleanId(payload.targetId);
+  const banned = payload.banned === true;
+  if (!state.players[targetId]) throw new Error("플레이어를 찾을 수 없습니다.");
+  if (targetId === playerId) throw new Error("자기 계정은 밴할 수 없습니다.");
+  if (adminRoleFor(state.moderation, targetId) === "master") throw new Error("1짱 관리자는 밴할 수 없습니다.");
+  if (banned) {
+    const reason = cleanText(payload.reason, 120) || "관리자에 의해 이용이 제한되었습니다.";
+    state.moderation.bans[targetId] = { playerId: targetId, issuerId: playerId, reason, createdAt: nowIso() };
+    state.moderation.secondaryAdminIds = state.moderation.secondaryAdminIds.filter((id) => id !== targetId);
+    for (const roomId of Object.keys(state.members)) removeMemberFromRoom(state, targetId, roomId);
+  } else delete state.moderation.bans[targetId];
+  return { ok: true, message: banned ? "플레이어를 밴했습니다." : "밴을 해제했습니다." };
+}
+
+function deleteMessage(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireAdmin(state, playerId);
+  const messageId = Math.floor(Number(payload.messageId));
+  const message = state.messages.find((item) => item.id === messageId);
+  if (!message) throw new Error("메시지를 찾을 수 없습니다.");
+  message.body = "";
+  message.deletedAt = nowIso();
+  message.deletedBy = playerId;
+  return { ok: true, message: "채팅을 삭제했습니다." };
+}
+
+function acknowledgeWarning(state: PlatformState, playerId: string, payload: JsonRecord) {
+  const warningId = cleanText(payload.warningId, 80);
+  const warning = state.moderation.warnings.find((item) => item.id === warningId && item.playerId === playerId);
+  if (!warning) throw new Error("경고를 찾을 수 없습니다.");
+  warning.acknowledgedAt = nowIso();
+  return { ok: true };
+}
+
+function updateProfile(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireLogin(playerId);
+  const profile = ensureProfile(state, playerId)!;
+  profile.statusMessage = cleanText(payload.statusMessage, 60);
+  const equipped = asRecord(payload.equipped);
+  for (const kind of ["badge", "trophy", "background"] as const) {
+    const id = cleanText(equipped[kind], 80);
+    if (!id) {
+      delete profile.equipped[kind];
+      continue;
+    }
+    const cosmetic = cosmeticById(id);
+    if (!cosmetic || cosmetic.kind !== kind || !profile.inventoryIds.includes(id)) throw new Error("보유하지 않은 치장품입니다.");
+    profile.equipped[kind] = id;
+  }
+  profile.updatedAt = nowIso();
+  return { ok: true, message: "프로필을 저장했습니다." };
+}
+
+function purchaseCosmetic(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireLogin(playerId);
+  const itemId = cleanText(payload.itemId, 80);
+  const item = cosmeticById(itemId);
+  if (!item) throw new Error("치장품을 찾을 수 없습니다.");
+  const profile = ensureProfile(state, playerId)!;
+  if (profile.inventoryIds.includes(itemId)) throw new Error("이미 보유한 치장품입니다.");
+  if (profile.coins < item.price) throw new Error("코인이 부족합니다.");
+  profile.coins -= item.price;
+  profile.inventoryIds.push(itemId);
+  profile.equipped[item.kind] = itemId;
+  profile.updatedAt = nowIso();
+  return { ok: true, message: `${item.name}을(를) 구입하고 착용했습니다.` };
+}
+
+function submitFeedback(state: PlatformState, playerId: string, payload: JsonRecord) {
+  const body = cleanText(payload.body, 500);
+  const category = ["bug", "idea", "other"].includes(String(payload.category)) ? String(payload.category) as FeedbackRecord["category"] : "other";
+  if (body.length < 4) throw new Error("피드백을 4글자 이상 입력해 주세요.");
+  state.feedback.push({ id: crypto.randomUUID().replaceAll("-", ""), playerId, category, body, createdAt: nowIso(), resolvedAt: null });
+  state.feedback = state.feedback.slice(-500);
+  return { ok: true, message: "피드백을 보냈습니다. 고마워요!" };
+}
+
+function resolveFeedback(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireAdmin(state, playerId);
+  const feedbackId = cleanText(payload.feedbackId, 80);
+  const item = state.feedback.find((feedback) => feedback.id === feedbackId);
+  if (!item) throw new Error("피드백을 찾을 수 없습니다.");
+  item.resolvedAt = payload.resolved === false ? null : nowIso();
+  return { ok: true };
 }
 
 export { emptyState };

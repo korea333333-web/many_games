@@ -14,7 +14,7 @@
     "test": "pnpm run test:unit && pnpm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vercel",
     "db:generate": "drizzle-kit generate",
-    "test:unit": "node --experimental-strip-types --test lib/games/engine.test.ts lib/rankings.test.ts lib/server/go-room-policy.test.ts lib/server/state-change-topics.test.ts lib/server/supabase-auth.test.ts"
+    "test:unit": "node --experimental-strip-types --test lib/community.test.ts lib/games/engine.test.ts lib/rankings.test.ts lib/server/go-room-policy.test.ts lib/server/state-change-topics.test.ts lib/server/supabase-auth.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.112.0",

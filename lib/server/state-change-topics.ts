@@ -6,6 +6,9 @@ type TopicState = {
   messages: unknown[];
   pinnedDirects?: Record<string, string[]>;
   rankings?: unknown;
+  profiles?: unknown;
+  moderation?: unknown;
+  feedback?: unknown;
 };
 
 function publicPlayerDirectory(state: TopicState) {
@@ -20,6 +23,9 @@ export function getStateChangeTopics(previous: TopicState, next: TopicState) {
     || JSON.stringify(previous.messages) !== JSON.stringify(next.messages)
     || JSON.stringify(previous.pinnedDirects) !== JSON.stringify(next.pinnedDirects)
     || JSON.stringify(previous.rankings) !== JSON.stringify(next.rankings)
+    || JSON.stringify(previous.profiles) !== JSON.stringify(next.profiles)
+    || JSON.stringify(previous.moderation) !== JSON.stringify(next.moderation)
+    || JSON.stringify(previous.feedback) !== JSON.stringify(next.feedback)
     || JSON.stringify(publicPlayerDirectory(previous)) !== JSON.stringify(publicPlayerDirectory(next))
   ) topics.add("lobby");
 

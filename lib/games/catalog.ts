@@ -19,6 +19,7 @@ export type GameInfo = {
   description: string;
   minPlayers: number;
   maxPlayers: number;
+  playTime: string;
   accent: string;
   icon: string;
 };
@@ -31,6 +32,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "돌 다섯 개를 먼저 이으면 승리",
     minPlayers: 2,
     maxPlayers: 2,
+    playTime: "5~15분",
     accent: "#facc15",
     icon: "●○",
   },
@@ -41,6 +43,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "하루 동안 이어 두는 로그인 전용 19줄 바둑",
     minPlayers: 2,
     maxPlayers: 2,
+    playTime: "30분~수일",
     accent: "#84a98c",
     icon: "●\n○",
   },
@@ -51,6 +54,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "마지막 글자로 단어를 이어가기",
     minPlayers: 2,
     maxPlayers: 10,
+    playTime: "5~15분",
     accent: "#38bdf8",
     icon: "사↻과",
   },
@@ -61,6 +65,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "그림을 그리고 가장 먼저 정답 맞히기",
     minPlayers: 2,
     maxPlayers: 10,
+    playTime: "5~15분",
     accent: "#fb7185",
     icon: "✎",
   },
@@ -71,6 +76,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "시간이 흐를수록 공개되는 힌트 퀴즈",
     minPlayers: 2,
     maxPlayers: 10,
+    playTime: "5~10분",
     accent: "#60a5fa",
     icon: "ㄱㄴㄷ",
   },
@@ -81,6 +87,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "남들과 겹치지 않는 보기를 골라 점수 얻기",
     minPlayers: 3,
     maxPlayers: 10,
+    playTime: "5~10분",
     accent: "#c084fc",
     icon: "≠",
   },
@@ -91,6 +98,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "같은 단어 사이에 숨은 라이어 찾기",
     minPlayers: 4,
     maxPlayers: 10,
+    playTime: "10~20분",
     accent: "#f43f5e",
     icon: "◉◉◉",
   },
@@ -101,6 +109,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "떨어뜨린 돌 네 개를 먼저 연결",
     minPlayers: 2,
     maxPlayers: 2,
+    playTime: "3~10분",
     accent: "#f97316",
     icon: "●●\n●●",
   },
@@ -111,6 +120,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "체크메이트와 캐슬링이 적용되는 정식 체스",
     minPlayers: 2,
     maxPlayers: 2,
+    playTime: "10~45분",
     accent: "#94a3b8",
     icon: "♞",
   },
@@ -121,6 +131,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "같은 색이나 숫자의 카드를 먼저 모두 내기",
     minPlayers: 2,
     maxPlayers: 10,
+    playTime: "10~30분",
     accent: "#ef4444",
     icon: "↻7",
   },
@@ -131,6 +142,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "윷을 던져 네 개의 말을 먼저 완주시키기",
     minPlayers: 2,
     maxPlayers: 4,
+    playTime: "15~30분",
     accent: "#f59e0b",
     icon: "윷",
   },
@@ -141,6 +153,7 @@ const ALL_GAMES: GameInfo[] = [
     description: "단서를 모아 상대의 숨겨진 숫자 맞히기",
     minPlayers: 2,
     maxPlayers: 4,
+    playTime: "5~20분",
     accent: "#94a3b8",
     icon: "◆7",
   },

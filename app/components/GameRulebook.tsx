@@ -35,12 +35,12 @@ export function GameRulebook({ open, initialGameId = "gomoku", onClose }: Props)
           <nav className="rulebook-index" aria-label="게임 목록">
             {GAME_CATALOG.map((item) => (
               <button key={item.id} className={selectedId === item.id ? "active" : ""} onClick={() => setSelectedId(item.id)} aria-pressed={selectedId === item.id}>
-                <span style={{ background: item.accent }}>{item.icon}</span><div><strong>{item.name}</strong><small>{item.minPlayers === item.maxPlayers ? `${item.minPlayers}명` : `${item.minPlayers}~${item.maxPlayers}명`}</small></div>
+                <span style={{ background: item.accent }}>{item.icon}</span><div><strong>{item.name}</strong><small>{item.minPlayers === item.maxPlayers ? `${item.minPlayers}명` : `${item.minPlayers}~${item.maxPlayers}명`} · {item.playTime}</small></div>
               </button>
             ))}
           </nav>
           <article className="rulebook-page" key={selectedId}>
-            <div className="rulebook-game-title"><span style={{ background: game.accent }}>{game.icon}</span><div><p>{rules.tagline}</p><h3>{game.name}</h3></div></div>
+            <div className="rulebook-game-title"><span style={{ background: game.accent }}>{game.icon}</span><div><p>{rules.tagline}</p><h3>{game.name}</h3><small>예상 플레이 시간 {game.playTime}</small></div></div>
             <RuleVisual gameId={selectedId} />
             <section className="rule-goal"><span>목표</span><strong>{rules.goal}</strong></section>
             <section className="rule-section"><h4>게임 진행</h4><ol>{rules.flow.map((step) => <li key={step}><i /> <span>{step}</span></li>)}</ol></section>

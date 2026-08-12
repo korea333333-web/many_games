@@ -10,7 +10,7 @@ function state() {
     sessions: {} as Record<string, unknown>,
     messages: [] as unknown[],
     pinnedDirects: {} as Record<string, string[]>,
-    rankings: { players: {}, recordedMatches: [] },
+    rankings: { players: {} as Record<string, unknown>, recordedMatches: [] },
   };
 }
 
@@ -54,5 +54,13 @@ test("전적 변경은 랭킹을 보고 있는 로비에도 알린다", () => {
   const previous = state();
   const next = structuredClone(previous);
   next.rankings.players.player1 = { wins: 1 };
+  assert.deepEqual(getStateChangeTopics(previous, next), ["lobby"]);
+});
+
+test("프로필과 관리자 권한 변경도 로비에 즉시 알린다", () => {
+  const previous = state();
+  const next = structuredClone(previous) as ReturnType<typeof state> & { profiles: Record<string, unknown>; moderation: Record<string, unknown> };
+  next.profiles = { player1: { coins: 30 } };
+  next.moderation = { masterId: "player1" };
   assert.deepEqual(getStateChangeTopics(previous, next), ["lobby"]);
 });
