@@ -26,8 +26,12 @@ type Member = { id: string; name: string; role: "player" | "spectator"; joinedAt
 type ActiveRoom = RoomListItem & { members: Member[]; viewerRole: string; game: GameEnvelope | null; revision: number };
 type ChatMessage = { id: number; senderId: string; senderName: string; senderAdminRole: AdminRole; recipientId?: string; recipientName?: string; body: string; createdAt: string; deletedAt?: string };
 type DirectContact = { id: string; nickname: string; lastSeen: string; online: boolean; pinned: boolean; adminRole: AdminRole };
+type OnlinePlayer = { id: string; nickname: string; lastSeen: string; adminRole: AdminRole };
+type ServerPresence = OnlinePlayer & { loggedIn: boolean; room: { id: string; title: string; gameId: GameId; status: "waiting" | "playing" } | null };
+type AnnouncementView = { id: string; body: string; issuerId: string; issuerName: string; issuerAdminRole: AdminRole; createdAt: string; expiresAt: string };
 type PublicProfile = {
   id: string; nickname: string; createdAt: string; updatedAt: string; statusMessage: string; coins: number;
+  infiniteCoins: boolean;
   equipped: Partial<Record<CosmeticKind, string>>; adminRole: AdminRole;
   career: { total: { played: number; wins: number; losses: number; draws: number }; games: LeaderboardEntry["games"]; ranked: LeaderboardEntry["ranked"] };
 };
@@ -35,7 +39,7 @@ type ModerationPlayer = PublicProfile & { warningCount: number; banned: boolean 
 type FeedbackView = FeedbackRecord & { nickname?: string };
 type Snapshot = {
   rooms: RoomListItem[];
-  onlinePlayers: Array<{ id: string; nickname: string; lastSeen: string }>;
+  onlinePlayers: OnlinePlayer[];
   directContacts: DirectContact[];
   pinnedDirectIds: string[];
   globalMessages: ChatMessage[];
@@ -51,9 +55,12 @@ type Snapshot = {
   ban: { reason: string; createdAt: string } | null;
   moderationPlayers: ModerationPlayer[];
   feedback: FeedbackView[];
+  announcement: AnnouncementView | null;
+  serverPresence: ServerPresence[];
+  secondaryAdminCount: number;
 };
 
-const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], directContacts: [], pinnedDirectIds: [], globalMessages: [], directMessages: [], activeRoom: null, leaderboard: [], playerDirectory: [], viewerProfile: null, viewerInventoryIds: [], cosmetics: [], adminRole: null, viewerWarnings: [], ban: null, moderationPlayers: [], feedback: [] };
+const EMPTY_SNAPSHOT: Snapshot = { rooms: [], onlinePlayers: [], directContacts: [], pinnedDirectIds: [], globalMessages: [], directMessages: [], activeRoom: null, leaderboard: [], playerDirectory: [], viewerProfile: null, viewerInventoryIds: [], cosmetics: [], adminRole: null, viewerWarnings: [], ban: null, moderationPlayers: [], feedback: [], announcement: null, serverPresence: [], secondaryAdminCount: 0 };
 const TIMED_GAME_IDS = new Set<GameId>(["word-chain", "drawing", "chosung", "same-answer"]);
 const ACTION_LOADING_LABELS: Record<string, string> = {
   createRoom: "새 방을 만들고 있어요",
@@ -68,6 +75,8 @@ const ACTION_LOADING_LABELS: Record<string, string> = {
   updateProfile: "프로필을 꾸미고 있어요",
   purchaseCosmetic: "치장품을 구입하고 있어요",
   submitFeedback: "피드백을 보내고 있어요",
+  grantCoins: "코인을 지급하고 있어요",
+  sendAnnouncement: "공지를 전송하고 있어요",
 };
 
 function playerCountLabel(game: Pick<GameInfo, "minPlayers" | "maxPlayers">) {
@@ -154,6 +163,7 @@ export function GamePlatform() {
   const chatOpenRef = useRef(false);
   const realtimeRefreshTimer = useRef<number | null>(null);
   const hasUnreadChat = hasUnreadGlobal || hasUnreadDirect;
+  const onlineAdminCount = snapshot.onlinePlayers.filter((player) => player.adminRole).length;
 
   useEffect(() => {
     const openSecretAdmin = (event: KeyboardEvent) => {
@@ -508,6 +518,7 @@ export function GamePlatform() {
   if (activeRoomId && snapshot.activeRoom) {
     return (
       <>
+        {snapshot.announcement && <AnnouncementBanner key={snapshot.announcement.id} announcement={snapshot.announcement} />}
         <RoomView
           room={snapshot.activeRoom}
           identity={identity}
@@ -525,7 +536,7 @@ export function GamePlatform() {
         <ChatDrawer open={chatOpen} onClose={closeChat} identity={identity} snapshot={snapshot} command={command} loggedIn={Boolean(authAccount)} onProfile={setProfileTargetId} />
         <GameRulebook key={`${rulebookGameId}-${rulebookOpen}`} open={rulebookOpen} initialGameId={rulebookGameId} onClose={() => setRulebookOpen(false)} />
         {profileTarget && <PlayerProfileModal key={`${profileTarget.id}-${profileTarget.updatedAt}`} profile={profileTarget} isOwn={profileTarget.id === identity.id} identity={identity} account={profileTarget.id === identity.id ? authAccount : null} inventoryIds={profileTarget.id === identity.id ? snapshot.viewerInventoryIds : []} cosmetics={snapshot.cosmetics} loading={loading} authBusy={authBusy} onClose={() => setProfileTargetId(null)} onSaveNickname={saveNickname} onCommand={command} onGoogleSignIn={signInWithGoogle} onSignOut={signOut} />}
-        {adminOpen && <AdminModal role={snapshot.adminRole} loggedIn={Boolean(authAccount)} players={snapshot.moderationPlayers} feedback={snapshot.feedback} command={command} onClose={() => setAdminOpen(false)} onLogin={signInWithGoogle} />}
+        {adminOpen && <AdminModal role={snapshot.adminRole} loggedIn={Boolean(authAccount)} players={snapshot.moderationPlayers} feedback={snapshot.feedback} presence={snapshot.serverPresence} secondaryAdminCount={snapshot.secondaryAdminCount} command={command} onClose={() => setAdminOpen(false)} onLogin={signInWithGoogle} />}
         {feedbackOpen && <FeedbackModal command={command} previous={snapshot.feedback} onClose={() => setFeedbackOpen(false)} />}
         {unreadWarning && <WarningModal warning={unreadWarning} onAcknowledge={() => command("acknowledgeWarning", { warningId: unreadWarning.id })} />}
         {notice && <Toast message={notice} onClose={() => setNotice("")} />}
@@ -536,6 +547,7 @@ export function GamePlatform() {
 
   return (
     <div className="platform-shell">
+      {snapshot.announcement && <AnnouncementBanner key={snapshot.announcement.id} announcement={snapshot.announcement} />}
       <aside className="game-rail" aria-label="게임 필터">
         <div className="brand-mark" aria-label="게임 로비"><span>G</span></div>
         <button className={gameFilter === "all" ? "rail-item active" : "rail-item"} onClick={() => setGameFilter("all")}>
@@ -550,7 +562,7 @@ export function GamePlatform() {
 
       <main className="lobby-main">
         <header className="topbar">
-          <div className="topbar-title"><h1>게임 로비</h1><span className="online-pill"><i />현재 {snapshot.onlinePlayers.length || 1}명 접속 중</span></div>
+          <div className="topbar-title"><h1>게임 로비</h1><span className="online-pill"><i />현재 {snapshot.onlinePlayers.length || 1}명 접속 중</span>{onlineAdminCount > 0 && <span className="admin-online-pill"><i />관리자 {onlineAdminCount}명 접속</span>}</div>
           <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="방 이름 또는 게임 검색" /></label>
           <div className="top-actions">
             <button className="rulebook-trigger" onClick={() => { setRulebookGameId(gameFilter === "all" ? "gomoku" : gameFilter); setRulebookOpen(true); }}><span aria-hidden="true">▥</span><strong>게임 사전</strong></button>
@@ -586,7 +598,7 @@ export function GamePlatform() {
       {rankingOpen && <LeaderboardModal entries={snapshot.leaderboard} identity={identity} loggedIn={Boolean(authAccount)} onClose={() => setRankingOpen(false)} onLogin={signInWithGoogle} onProfile={setProfileTargetId} />}
       {createOpen && <CreateRoomModal loading={loading} loggedIn={Boolean(authAccount)} onClose={() => setCreateOpen(false)} onCreate={async (payload) => { const result = await command("createRoom", payload); if (result?.roomId) setCreateOpen(false); }} />}
       {profileTarget && <PlayerProfileModal key={`${profileTarget.id}-${profileTarget.updatedAt}`} profile={profileTarget} isOwn={profileTarget.id === identity.id} identity={identity} account={profileTarget.id === identity.id ? authAccount : null} inventoryIds={profileTarget.id === identity.id ? snapshot.viewerInventoryIds : []} cosmetics={snapshot.cosmetics} loading={loading} authBusy={authBusy} onClose={() => setProfileTargetId(null)} onSaveNickname={saveNickname} onCommand={command} onGoogleSignIn={signInWithGoogle} onSignOut={signOut} />}
-      {adminOpen && <AdminModal role={snapshot.adminRole} loggedIn={Boolean(authAccount)} players={snapshot.moderationPlayers} feedback={snapshot.feedback} command={command} onClose={() => setAdminOpen(false)} onLogin={signInWithGoogle} />}
+      {adminOpen && <AdminModal role={snapshot.adminRole} loggedIn={Boolean(authAccount)} players={snapshot.moderationPlayers} feedback={snapshot.feedback} presence={snapshot.serverPresence} secondaryAdminCount={snapshot.secondaryAdminCount} command={command} onClose={() => setAdminOpen(false)} onLogin={signInWithGoogle} />}
       {feedbackOpen && <FeedbackModal command={command} previous={snapshot.feedback} onClose={() => setFeedbackOpen(false)} />}
       {unreadWarning && <WarningModal warning={unreadWarning} onAcknowledge={() => command("acknowledgeWarning", { warningId: unreadWarning.id })} />}
       {joinTarget && <PasswordModal roomTitle={joinTarget.title} loading={loading} onClose={() => setJoinTarget(null)} onSubmit={(password) => enterRoom(joinTarget, password)} />}
@@ -602,6 +614,18 @@ function ProfileAvatar({ nickname, avatarUrl }: { nickname: string; avatarUrl?: 
 
 function AdminBadge({ role }: { role: AdminRole }) {
   return role ? <span className={`admin-badge ${role}`}>{role === "master" ? "1짱 관리자" : "관리자"}</span> : null;
+}
+
+function AnnouncementBanner({ announcement }: { announcement: AnnouncementView }) {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const remaining = Math.max(0, Date.parse(announcement.expiresAt) - Date.now());
+    const timer = window.setTimeout(() => setVisible(false), remaining);
+    return () => window.clearTimeout(timer);
+  }, [announcement.expiresAt]);
+  if (!visible) return null;
+  const long = announcement.body.length > 36;
+  return <aside className="announcement-banner" role="status" aria-live="polite"><span className="announcement-label">공지</span><div className={long ? "announcement-copy long" : "announcement-copy"}><span>{announcement.body}</span></div><b>{announcement.issuerAdminRole === "master" ? "1짱" : "관리자"}</b></aside>;
 }
 
 function equippedItem(profile: PublicProfile, cosmetics: CosmeticItem[], kind: CosmeticKind) {
@@ -640,7 +664,7 @@ function PlayerProfileModal({ profile, isOwn, identity, account, inventoryIds, c
           <div><div className="profile-name"><strong>{profile.nickname}</strong><AdminBadge role={profile.adminRole} /></div><p>{profile.statusMessage || "아직 상태 메시지가 없어요."}</p><small>가입 {new Date(profile.createdAt).toLocaleDateString("ko-KR")}</small></div>
           {trophy && <b className="profile-trophy" title={trophy.name}>{trophy.icon}</b>}
         </div>
-        <div className="profile-career"><div><strong>{profile.career.total.played}</strong><span>총 경기</span></div><div><strong>{profile.career.total.wins}</strong><span>승리</span></div><div><strong>{winRate}%</strong><span>승률</span></div><div><strong>{profile.coins}</strong><span>코인</span></div></div>
+        <div className="profile-career"><div><strong>{profile.career.total.played}</strong><span>총 경기</span></div><div><strong>{profile.career.total.wins}</strong><span>승리</span></div><div><strong>{winRate}%</strong><span>승률</span></div><div><strong>{profile.infiniteCoins ? "∞" : profile.coins}</strong><span>코인</span></div></div>
         {isOwn && <div className="profile-tabs"><button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>내 정보</button><button className={tab === "closet" ? "active" : ""} onClick={() => setTab("closet")} disabled={!account}>옷장</button><button className={tab === "shop" ? "active" : ""} onClick={() => setTab("shop")} disabled={!account}>상점</button></div>}
         {isOwn && tab === "profile" && <>
           {!account && <button type="button" className="google-login-button" onClick={onGoogleSignIn} disabled={authBusy}><b aria-hidden="true">G</b>{authBusy ? "Google로 이동 중…" : "Google로 로그인하고 전적 저장"}</button>}
@@ -649,7 +673,7 @@ function PlayerProfileModal({ profile, isOwn, identity, account, inventoryIds, c
           {!account && <p className="modal-note">로그인하면 승리할 때마다 30코인을 받고 프로필을 꾸밀 수 있어요.</p>}
         </>}
         {isOwn && account && tab === "closet" && <div className="cosmetic-grid">{cosmetics.filter((item) => inventoryIds.includes(item.id)).map((item) => <button key={item.id} className={equipped[item.kind] === item.id ? "cosmetic-card equipped" : "cosmetic-card"} onClick={() => setEquipped((value) => ({ ...value, [item.kind]: item.id }))}><span style={{ color: item.accent }}>{item.icon}</span><strong>{item.name}</strong><small>{item.kind === "badge" ? "배지" : item.kind === "trophy" ? "트로피" : "배경"}</small></button>)}</div>}
-        {isOwn && account && tab === "shop" && <><p className="coin-guide">🪙 보유 코인 <strong>{profile.coins}</strong> · 게임에서 이기면 30코인</p><div className="cosmetic-grid shop">{cosmetics.filter((item) => item.price > 0).map((item) => { const owned = inventoryIds.includes(item.id); return <button key={item.id} className={owned ? "cosmetic-card owned" : "cosmetic-card"} disabled={owned || profile.coins < item.price} onClick={() => onCommand("purchaseCosmetic", { itemId: item.id })}><span style={{ color: item.accent }}>{item.icon}</span><strong>{item.name}</strong><small>{owned ? "보유 중" : `🪙 ${item.price}`}</small></button>; })}</div></>}
+        {isOwn && account && tab === "shop" && <><p className="coin-guide">🪙 보유 코인 <strong>{profile.infiniteCoins ? "∞" : profile.coins}</strong> · {profile.infiniteCoins ? "최고 관리자는 코인이 차감되지 않습니다" : "게임에서 이기면 30코인"}</p><div className="cosmetic-grid shop">{cosmetics.filter((item) => item.price > 0).map((item) => { const owned = inventoryIds.includes(item.id); return <button key={item.id} className={owned ? "cosmetic-card owned" : "cosmetic-card"} disabled={owned || (!profile.infiniteCoins && profile.coins < item.price)} onClick={() => onCommand("purchaseCosmetic", { itemId: item.id })}><span style={{ color: item.accent }}>{item.icon}</span><strong>{item.name}</strong><small>{owned ? "보유 중" : profile.infiniteCoins ? "🪙 무료" : `🪙 ${item.price}`}</small></button>; })}</div></>}
         {!isOwn && <div className="game-record-list">{Object.entries(profile.career.games).map(([gameId, record]) => <div key={gameId}><span>{GAME_BY_ID[gameId as GameId].name}</span><strong>{record.wins}승 {record.draws}무 {record.losses}패</strong></div>)}{!Object.keys(profile.career.games).length && <p>아직 완료한 게임이 없어요.</p>}</div>}
         <div className="modal-actions profile-actions">{isOwn && account && <button type="button" className="text-button danger" onClick={onSignOut} disabled={authBusy}>로그아웃</button>}<span /><button type="button" className="secondary-button" onClick={onClose}>닫기</button>{isOwn && <button type="button" className="primary-button" onClick={saveProfile} disabled={loading || !nickname.trim()}>저장</button>}</div>
       </section>
@@ -837,8 +861,8 @@ function ChatDrawer({ open, onClose, identity, snapshot, command, loggedIn, onPr
   );
 }
 
-function AdminModal({ role, loggedIn, players, feedback, command, onClose, onLogin }: {
-  role: AdminRole; loggedIn: boolean; players: ModerationPlayer[]; feedback: FeedbackView[];
+function AdminModal({ role, loggedIn, players, feedback, presence, secondaryAdminCount, command, onClose, onLogin }: {
+  role: AdminRole; loggedIn: boolean; players: ModerationPlayer[]; feedback: FeedbackView[]; presence: ServerPresence[]; secondaryAdminCount: number;
   command: (type: string, payload?: Record<string, unknown>) => Promise<unknown>; onClose: () => void; onLogin: () => void;
 }) {
   const [password, setPassword] = useState("");
@@ -846,11 +870,14 @@ function AdminModal({ role, loggedIn, players, feedback, command, onClose, onLog
   const [newPassword, setNewPassword] = useState("");
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState("");
-  const [tab, setTab] = useState<"players" | "feedback" | "security">("players");
+  const [announcement, setAnnouncement] = useState("");
+  const [coinAmount, setCoinAmount] = useState("100");
+  const [tab, setTab] = useState<"players" | "operations" | "feedback" | "security">("operations");
   const shownPlayers = players.filter((player) => player.nickname.toLowerCase().includes(search.trim().toLowerCase()));
   const act = async (type: string, payload: Record<string, unknown>) => {
     const result = await command(type, payload);
     if (result && type === "claimMasterAdmin") setPassword("");
+    if (result && type === "sendAnnouncement") setAnnouncement("");
   };
   return (
     <div className="modal-backdrop admin-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -859,9 +886,10 @@ function AdminModal({ role, loggedIn, players, feedback, command, onClose, onLog
         {!loggedIn ? <div className="admin-gate"><span>⌁</span><strong>로그인된 계정이 필요합니다</strong><p>관리자 권한은 Google 계정에 연결되어 저장됩니다.</p><button className="google-login-button" onClick={onLogin}><b>G</b>Google 로그인</button></div>
           : !role ? <form className="admin-gate" onSubmit={(event) => { event.preventDefault(); void act("claimMasterAdmin", { password }); }}><span>⌁</span><strong>1짱 권한 가져오기</strong><p>비밀번호가 맞으면 기존 1짱 권한은 이 계정으로 이전됩니다.</p><input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} maxLength={64} placeholder="관리자 비밀번호" /><button className="primary-button" disabled={!password}>확인</button></form>
             : <>
-              <div className="admin-session"><AdminBadge role={role} /><span>{role === "master" ? "모든 관리 기능을 사용할 수 있습니다." : "경고와 채팅·피드백 관리가 가능합니다."}</span></div>
-              <div className="profile-tabs admin-tabs"><button className={tab === "players" ? "active" : ""} onClick={() => setTab("players")}>플레이어</button><button className={tab === "feedback" ? "active" : ""} onClick={() => setTab("feedback")}>피드백</button>{role === "master" && <button className={tab === "security" ? "active" : ""} onClick={() => setTab("security")}>보안</button>}</div>
-              {tab === "players" && <><input className="admin-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="닉네임 검색" /><input className="admin-reason" value={reason} onChange={(event) => setReason(event.target.value)} maxLength={120} placeholder="경고·밴 사유를 먼저 입력하세요" /><div className="admin-player-list">{shownPlayers.map((player) => <article key={player.id}><div className="admin-player-name"><span>{player.nickname[0]}</span><div><strong>{player.nickname} <AdminBadge role={player.adminRole} /></strong><small>{player.career.total.wins}승 · 경고 {player.warningCount}회{player.banned ? " · 밴됨" : ""}</small></div></div><div className="admin-row-actions"><button onClick={() => void act("warnPlayer", { targetId: player.id, message: reason })}>경고</button>{role === "master" && player.adminRole !== "master" && <button onClick={() => void act("setSecondaryAdmin", { targetId: player.id, enabled: player.adminRole !== "admin" })}>{player.adminRole === "admin" ? "관리자 해제" : "2짱 지정"}</button>}{role === "master" && player.adminRole !== "master" && <button className={player.banned ? "safe" : "danger"} onClick={() => void act("setPlayerBan", { targetId: player.id, banned: !player.banned, reason })}>{player.banned ? "밴 해제" : "밴"}</button>}</div></article>)}</div></>}
+              <div className="admin-session"><AdminBadge role={role} /><span>{role === "master" ? "코인 지급·권한 회수·밴을 포함한 모든 기능을 사용할 수 있습니다." : "접속자 확인·공지·경고·채팅 관리가 가능합니다."}</span></div>
+              <div className="profile-tabs admin-tabs"><button className={tab === "operations" ? "active" : ""} onClick={() => setTab("operations")}>서버 운영</button><button className={tab === "players" ? "active" : ""} onClick={() => setTab("players")}>플레이어</button><button className={tab === "feedback" ? "active" : ""} onClick={() => setTab("feedback")}>피드백</button>{role === "master" && <button className={tab === "security" ? "active" : ""} onClick={() => setTab("security")}>보안</button>}</div>
+              {tab === "operations" && <div className="admin-operations"><form className="announcement-form" onSubmit={(event) => { event.preventDefault(); void act("sendAnnouncement", { body: announcement }); }}><div><strong>서버 공지</strong><small>모든 화면 상단에 1분 동안 표시 · 공지 쿨타임 1분</small></div><textarea value={announcement} onChange={(event) => setAnnouncement(event.target.value)} maxLength={200} placeholder="게임 중인 플레이어에게도 방해되지 않게 표시됩니다." /><button className="primary-button" disabled={announcement.trim().length < 2}>공지 보내기</button></form><div className="presence-head"><div><strong>현재 접속자</strong><small>{presence.length}명 접속 중</small></div><span>실시간</span></div><div className="server-presence-list">{presence.length ? presence.map((player) => <article key={player.id}><i className="presence-dot" /><div><strong>{player.nickname} <AdminBadge role={player.adminRole} /></strong><small>{player.loggedIn ? "Google 계정" : "게스트"} · {player.room ? `${GAME_BY_ID[player.room.gameId].name} ${player.room.status === "playing" ? "게임 중" : "대기 중"}` : "로비"}</small></div><time>{new Date(player.lastSeen).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</time></article>) : <div className="empty-chat compact">현재 접속자가 없어요.</div>}</div></div>}
+              {tab === "players" && <><div className="admin-player-tools"><input className="admin-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="닉네임 검색" />{role === "master" && <label>지급 코인<input type="number" min="1" max="100000" value={coinAmount} onChange={(event) => setCoinAmount(event.target.value)} /></label>}</div><div className="admin-limit"><span>파란 관리자 <b>{secondaryAdminCount}</b>/10명</span><small>최고 관리자는 언제든 권한을 회수할 수 있습니다.</small></div><input className="admin-reason" value={reason} onChange={(event) => setReason(event.target.value)} maxLength={120} placeholder="경고·밴 사유를 먼저 입력하세요" /><div className="admin-player-list">{shownPlayers.map((player) => <article key={player.id}><div className="admin-player-name"><span>{player.nickname[0]}</span><div><strong>{player.nickname} <AdminBadge role={player.adminRole} /></strong><small>{player.career.total.wins}승 · 🪙 {player.infiniteCoins ? "∞" : player.coins} · 경고 {player.warningCount}회{player.banned ? " · 밴됨" : ""}</small></div></div><div className="admin-row-actions"><button onClick={() => void act("warnPlayer", { targetId: player.id, message: reason })}>경고</button>{role === "master" && player.id.startsWith("user_") && player.adminRole !== "master" && <button disabled={player.adminRole !== "admin" && secondaryAdminCount >= 10} onClick={() => void act("setSecondaryAdmin", { targetId: player.id, enabled: player.adminRole !== "admin" })}>{player.adminRole === "admin" ? "관리자 회수" : "관리자 지정"}</button>}{role === "master" && player.id.startsWith("user_") && <button onClick={() => void act("grantCoins", { targetId: player.id, amount: Number(coinAmount) })}>코인 지급</button>}{role === "master" && player.adminRole !== "master" && <button className={player.banned ? "safe" : "danger"} onClick={() => void act("setPlayerBan", { targetId: player.id, banned: !player.banned, reason })}>{player.banned ? "밴 해제" : "밴"}</button>}</div></article>)}</div></>}
               {tab === "feedback" && <div className="feedback-admin-list">{feedback.length ? feedback.map((item) => <article key={item.id} className={item.resolvedAt ? "resolved" : ""}><div><b>{item.category === "bug" ? "버그" : item.category === "idea" ? "아이디어" : "기타"}</b><strong>{item.nickname ?? "플레이어"}</strong><time>{new Date(item.createdAt).toLocaleDateString("ko-KR")}</time></div><p>{item.body}</p><button onClick={() => void act("resolveFeedback", { feedbackId: item.id, resolved: !item.resolvedAt })}>{item.resolvedAt ? "다시 열기" : "처리 완료"}</button></article>) : <div className="empty-chat compact">도착한 피드백이 없어요.</div>}</div>}
               {tab === "security" && role === "master" && <form className="admin-password-form" onSubmit={(event) => { event.preventDefault(); void act("changeAdminPassword", { currentPassword, newPassword }); }}><strong>관리자 비밀번호 변경</strong><p>다음 Ctrl+Enter 로그인부터 새 비밀번호를 사용합니다.</p><input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="현재 비밀번호" /><input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="새 비밀번호 (4글자 이상)" /><button className="primary-button" disabled={!currentPassword || newPassword.length < 4}>비밀번호 변경</button></form>}
             </>}

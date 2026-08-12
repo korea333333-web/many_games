@@ -2,6 +2,8 @@ import type { GameId } from "./games/catalog.ts";
 
 export type AdminRole = "master" | "admin" | null;
 export type CosmeticKind = "badge" | "trophy" | "background";
+export const MAX_SECONDARY_ADMINS = 10;
+export const ANNOUNCEMENT_COOLDOWN_MS = 60_000;
 
 export type CosmeticItem = {
   id: string;
@@ -50,12 +52,22 @@ export type BanRecord = {
   createdAt: string;
 };
 
+export type AnnouncementRecord = {
+  id: string;
+  body: string;
+  issuerId: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
 export type ModerationState = {
   passwordHash: string | null;
   masterId: string | null;
   secondaryAdminIds: string[];
   warnings: WarningRecord[];
   bans: Record<string, BanRecord>;
+  announcement: AnnouncementRecord | null;
+  lastAnnouncementAt: string | null;
 };
 
 export type FeedbackRecord = {
@@ -74,11 +86,25 @@ function sourceRecord(value: unknown): Record<string, unknown> {
 }
 
 export function emptyModerationState(): ModerationState {
-  return { passwordHash: null, masterId: null, secondaryAdminIds: [], warnings: [], bans: {} };
+  return { passwordHash: null, masterId: null, secondaryAdminIds: [], warnings: [], bans: {}, announcement: null, lastAnnouncementAt: null };
 }
 
 export function normalizeModerationState(value: unknown): ModerationState {
   const source = sourceRecord(value);
+  const rawAnnouncement = sourceRecord(source.announcement);
+  const announcement = typeof rawAnnouncement.id === "string"
+    && typeof rawAnnouncement.body === "string"
+    && typeof rawAnnouncement.issuerId === "string"
+    && typeof rawAnnouncement.createdAt === "string"
+    && typeof rawAnnouncement.expiresAt === "string"
+    ? {
+      id: rawAnnouncement.id,
+      body: rawAnnouncement.body.slice(0, 200),
+      issuerId: rawAnnouncement.issuerId,
+      createdAt: rawAnnouncement.createdAt,
+      expiresAt: rawAnnouncement.expiresAt,
+    } satisfies AnnouncementRecord
+    : null;
   const bans: Record<string, BanRecord> = {};
   for (const [playerId, raw] of Object.entries(sourceRecord(source.bans))) {
     const item = sourceRecord(raw);
@@ -94,7 +120,7 @@ export function normalizeModerationState(value: unknown): ModerationState {
     passwordHash: typeof source.passwordHash === "string" ? source.passwordHash : null,
     masterId: typeof source.masterId === "string" ? source.masterId : null,
     secondaryAdminIds: Array.isArray(source.secondaryAdminIds)
-      ? [...new Set(source.secondaryAdminIds.filter((id): id is string => typeof id === "string"))].slice(0, 30)
+      ? [...new Set(source.secondaryAdminIds.filter((id): id is string => typeof id === "string"))].slice(0, MAX_SECONDARY_ADMINS)
       : [],
     warnings: Array.isArray(source.warnings) ? source.warnings.flatMap((raw) => {
       const item = sourceRecord(raw);
@@ -109,6 +135,8 @@ export function normalizeModerationState(value: unknown): ModerationState {
       } satisfies WarningRecord];
     }).slice(-500) : [],
     bans,
+    announcement,
+    lastAnnouncementAt: typeof source.lastAnnouncementAt === "string" ? source.lastAnnouncementAt : announcement?.createdAt ?? null,
   };
 }
 

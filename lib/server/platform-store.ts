@@ -23,6 +23,8 @@ import {
 } from "../rankings.ts";
 import {
   COSMETIC_CATALOG,
+  ANNOUNCEMENT_COOLDOWN_MS,
+  MAX_SECONDARY_ADMINS,
   adminRoleFor,
   cosmeticById,
   createDefaultProfile,
@@ -330,6 +332,7 @@ function makePublicProfile(state: PlatformState, playerId: string) {
     updatedAt: profile?.updatedAt ?? player.createdAt,
     statusMessage: profile?.statusMessage ?? "",
     coins: profile?.coins ?? 0,
+    infiniteCoins: adminRoleFor(state.moderation, playerId) === "master",
     equipped: profile?.equipped ?? {},
     adminRole: adminRoleFor(state.moderation, playerId),
     career: publicCareer(state, playerId),
@@ -667,6 +670,22 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
     : playerId
       ? state.feedback.filter((item) => item.playerId === playerId).slice(-20).reverse()
       : [];
+  const activeAnnouncement = state.moderation.announcement && Date.parse(state.moderation.announcement.expiresAt) > now
+    ? {
+      ...state.moderation.announcement,
+      issuerName: state.players[state.moderation.announcement.issuerId]?.nickname ?? "관리자",
+      issuerAdminRole: adminRoleFor(state.moderation, state.moderation.announcement.issuerId),
+    }
+    : null;
+  const serverPresence = viewerAdminRole ? onlinePlayers.map((player) => {
+    const roomEntry = Object.entries(state.members).find(([, members]) => members.some((member) => member.playerId === player.id));
+    const room = roomEntry ? state.rooms[roomEntry[0]] : null;
+    return {
+      ...player,
+      loggedIn: isAuthenticatedPlayerId(player.id),
+      room: room ? { id: room.id, title: room.title, gameId: room.gameId, status: room.status } : null,
+    };
+  }) : [];
 
   return {
     rooms,
@@ -691,6 +710,9 @@ function makeSnapshot(state: PlatformState, playerId: string | null, roomId: str
       banned: Boolean(state.moderation.bans[profile.id]),
     })) : [],
     feedback,
+    announcement: activeAnnouncement,
+    serverPresence,
+    secondaryAdminCount: state.moderation.secondaryAdminIds.length,
     serverTime: nowIso(now),
   };
 }
@@ -740,6 +762,8 @@ export async function executeCommand(body: JsonRecord, auth?: StateAuth) {
     if (type === "claimMasterAdmin") return { value: await claimMasterAdmin(state, actor.id, payload.password) };
     if (type === "changeAdminPassword") return { value: await changeAdminPassword(state, actor.id, payload.currentPassword, payload.newPassword) };
     if (type === "setSecondaryAdmin") return { value: setSecondaryAdmin(state, actor.id, payload) };
+    if (type === "grantCoins") return { value: grantCoins(state, actor.id, payload) };
+    if (type === "sendAnnouncement") return { value: sendAnnouncement(state, actor.id, payload) };
     if (type === "warnPlayer") return { value: warnPlayer(state, actor.id, payload) };
     if (type === "setPlayerBan") return { value: setPlayerBan(state, actor.id, payload) };
     if (type === "deleteMessage") return { value: deleteMessage(state, actor.id, payload) };
@@ -964,10 +988,46 @@ function setSecondaryAdmin(state: PlatformState, playerId: string, payload: Json
   if (targetId === playerId) throw new Error("1짱 관리자는 이미 모든 권한을 가지고 있습니다.");
   const enabled = payload.enabled === true;
   const ids = new Set(state.moderation.secondaryAdminIds);
-  if (enabled) ids.add(targetId);
+  if (enabled) {
+    if (!ids.has(targetId) && ids.size >= MAX_SECONDARY_ADMINS) throw new Error(`일반 관리자는 최대 ${MAX_SECONDARY_ADMINS}명까지 지정할 수 있습니다.`);
+    ids.add(targetId);
+  }
   else ids.delete(targetId);
-  state.moderation.secondaryAdminIds = [...ids].slice(0, 30);
+  state.moderation.secondaryAdminIds = [...ids].slice(0, MAX_SECONDARY_ADMINS);
   return { ok: true, message: enabled ? "2짱 관리자로 지정했습니다." : "2짱 관리자 권한을 해제했습니다." };
+}
+
+function grantCoins(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireAdmin(state, playerId, true);
+  const targetId = cleanId(payload.targetId);
+  requireLogin(targetId);
+  if (!state.players[targetId]) throw new Error("플레이어를 찾을 수 없습니다.");
+  const amount = Math.floor(Number(payload.amount));
+  if (!Number.isFinite(amount) || amount < 1 || amount > 100_000) throw new Error("코인은 1~100,000개 사이로 지급해 주세요.");
+  const profile = ensureProfile(state, targetId)!;
+  profile.coins = Math.min(Number.MAX_SAFE_INTEGER, profile.coins + amount);
+  profile.updatedAt = nowIso();
+  return { ok: true, message: `${state.players[targetId].nickname}님에게 ${amount.toLocaleString("ko-KR")}코인을 지급했습니다.` };
+}
+
+function sendAnnouncement(state: PlatformState, playerId: string, payload: JsonRecord) {
+  requireAdmin(state, playerId);
+  const body = cleanText(payload.body, 200);
+  if (body.length < 2) throw new Error("공지 내용을 2글자 이상 입력해 주세요.");
+  const now = Date.now();
+  const lastAt = state.moderation.lastAnnouncementAt ? Date.parse(state.moderation.lastAnnouncementAt) : 0;
+  const waitMs = ANNOUNCEMENT_COOLDOWN_MS - (now - lastAt);
+  if (waitMs > 0) throw new Error(`다음 공지는 ${Math.ceil(waitMs / 1_000)}초 뒤에 보낼 수 있습니다.`);
+  const createdAt = nowIso(now);
+  state.moderation.announcement = {
+    id: crypto.randomUUID().replaceAll("-", ""),
+    body,
+    issuerId: playerId,
+    createdAt,
+    expiresAt: nowIso(now + ANNOUNCEMENT_COOLDOWN_MS),
+  };
+  state.moderation.lastAnnouncementAt = createdAt;
+  return { ok: true, message: "서버 공지를 보냈습니다." };
 }
 
 function warnPlayer(state: PlatformState, playerId: string, payload: JsonRecord) {
@@ -1049,8 +1109,9 @@ function purchaseCosmetic(state: PlatformState, playerId: string, payload: JsonR
   if (!item) throw new Error("치장품을 찾을 수 없습니다.");
   const profile = ensureProfile(state, playerId)!;
   if (profile.inventoryIds.includes(itemId)) throw new Error("이미 보유한 치장품입니다.");
-  if (profile.coins < item.price) throw new Error("코인이 부족합니다.");
-  profile.coins -= item.price;
+  const isMaster = adminRoleFor(state.moderation, playerId) === "master";
+  if (!isMaster && profile.coins < item.price) throw new Error("코인이 부족합니다.");
+  if (!isMaster) profile.coins -= item.price;
   profile.inventoryIds.push(itemId);
   profile.equipped[item.kind] = itemId;
   profile.updatedAt = nowIso();
