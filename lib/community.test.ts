@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MAX_SECONDARY_ADMINS, adminRoleFor, createDefaultProfile, normalizeModerationState, normalizeProfiles } from "./community.ts";
 
-test("1짱 관리자는 한 명이고 2짱 관리자와 구분된다", () => {
+test("최고관리자는 한 명이고 일반 관리자와 구분된다", () => {
   const state = normalizeModerationState({ masterId: "user_master", secondaryAdminIds: ["user_admin", "user_admin"] });
   assert.equal(adminRoleFor(state, "user_master"), "master");
   assert.equal(adminRoleFor(state, "user_admin"), "admin");

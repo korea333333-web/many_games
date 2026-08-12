@@ -306,7 +306,7 @@ function requireLogin(playerId: string) {
 function requireAdmin(state: PlatformState, playerId: string, masterOnly = false): AdminRole {
   requireLogin(playerId);
   const role = adminRoleFor(state.moderation, playerId);
-  if (!role || (masterOnly && role !== "master")) throw new Error(masterOnly ? "1짱 관리자만 사용할 수 있습니다." : "관리자 권한이 필요합니다.");
+  if (!role || (masterOnly && role !== "master")) throw new Error(masterOnly ? "최고관리자만 사용할 수 있습니다." : "관리자 권한이 필요합니다.");
   return role;
 }
 
@@ -966,7 +966,7 @@ async function claimMasterAdmin(state: PlatformState, playerId: string, rawPassw
   state.moderation.masterId = playerId;
   state.moderation.passwordHash = expected;
   state.moderation.secondaryAdminIds = state.moderation.secondaryAdminIds.filter((id) => id !== playerId && id !== previousMasterId);
-  return { ok: true, transferred: Boolean(previousMasterId && previousMasterId !== playerId), message: "1짱 관리자 권한이 이 계정으로 이전되었습니다." };
+  return { ok: true, transferred: Boolean(previousMasterId && previousMasterId !== playerId), message: "최고관리자 권한이 이 계정으로 이전되었습니다." };
 }
 
 async function changeAdminPassword(state: PlatformState, playerId: string, currentRaw: unknown, nextRaw: unknown) {
@@ -985,7 +985,7 @@ function setSecondaryAdmin(state: PlatformState, playerId: string, payload: Json
   const targetId = cleanId(payload.targetId);
   requireLogin(targetId);
   if (!state.players[targetId]) throw new Error("플레이어를 찾을 수 없습니다.");
-  if (targetId === playerId) throw new Error("1짱 관리자는 이미 모든 권한을 가지고 있습니다.");
+  if (targetId === playerId) throw new Error("최고관리자는 이미 모든 권한을 가지고 있습니다.");
   const enabled = payload.enabled === true;
   const ids = new Set(state.moderation.secondaryAdminIds);
   if (enabled) {
@@ -994,7 +994,7 @@ function setSecondaryAdmin(state: PlatformState, playerId: string, payload: Json
   }
   else ids.delete(targetId);
   state.moderation.secondaryAdminIds = [...ids].slice(0, MAX_SECONDARY_ADMINS);
-  return { ok: true, message: enabled ? "2짱 관리자로 지정했습니다." : "2짱 관리자 권한을 해제했습니다." };
+  return { ok: true, message: enabled ? "관리자로 지정했습니다." : "관리자 권한을 해제했습니다." };
 }
 
 function grantCoins(state: PlatformState, playerId: string, payload: JsonRecord) {
@@ -1054,7 +1054,7 @@ function setPlayerBan(state: PlatformState, playerId: string, payload: JsonRecor
   const banned = payload.banned === true;
   if (!state.players[targetId]) throw new Error("플레이어를 찾을 수 없습니다.");
   if (targetId === playerId) throw new Error("자기 계정은 밴할 수 없습니다.");
-  if (adminRoleFor(state.moderation, targetId) === "master") throw new Error("1짱 관리자는 밴할 수 없습니다.");
+  if (adminRoleFor(state.moderation, targetId) === "master") throw new Error("최고관리자는 밴할 수 없습니다.");
   if (banned) {
     const reason = cleanText(payload.reason, 120) || "관리자에 의해 이용이 제한되었습니다.";
     state.moderation.bans[targetId] = { playerId: targetId, issuerId: playerId, reason, createdAt: nowIso() };

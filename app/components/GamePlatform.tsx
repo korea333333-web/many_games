@@ -613,7 +613,7 @@ function ProfileAvatar({ nickname, avatarUrl }: { nickname: string; avatarUrl?: 
 }
 
 function AdminBadge({ role }: { role: AdminRole }) {
-  return role ? <span className={`admin-badge ${role}`}>{role === "master" ? "1짱 관리자" : "관리자"}</span> : null;
+  return role ? <span className={`admin-badge ${role}`}>{role === "master" ? "최고관리자" : "관리자"}</span> : null;
 }
 
 function AnnouncementBanner({ announcement }: { announcement: AnnouncementView }) {
@@ -625,7 +625,7 @@ function AnnouncementBanner({ announcement }: { announcement: AnnouncementView }
   }, [announcement.expiresAt]);
   if (!visible) return null;
   const long = announcement.body.length > 36;
-  return <aside className="announcement-banner" role="status" aria-live="polite"><span className="announcement-label">공지</span><div className={long ? "announcement-copy long" : "announcement-copy"}><span>{announcement.body}</span></div><b>{announcement.issuerAdminRole === "master" ? "1짱" : "관리자"}</b></aside>;
+  return <aside className="announcement-banner" role="status" aria-live="polite"><span className="announcement-label">공지</span><div className={long ? "announcement-copy long" : "announcement-copy"}><span>{announcement.body}</span></div><b>{announcement.issuerAdminRole === "master" ? "최고관리자" : "관리자"}</b></aside>;
 }
 
 function equippedItem(profile: PublicProfile, cosmetics: CosmeticItem[], kind: CosmeticKind) {
@@ -884,7 +884,7 @@ function AdminModal({ role, loggedIn, players, feedback, presence, secondaryAdmi
       <section className="modal-card admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-title">
         <div className="modal-head"><div><span className="eyebrow">SECRET CONTROL · CTRL + ENTER</span><h2 id="admin-title">관리자 제어실</h2></div><button onClick={onClose} aria-label="닫기">×</button></div>
         {!loggedIn ? <div className="admin-gate"><span>⌁</span><strong>로그인된 계정이 필요합니다</strong><p>관리자 권한은 Google 계정에 연결되어 저장됩니다.</p><button className="google-login-button" onClick={onLogin}><b>G</b>Google 로그인</button></div>
-          : !role ? <form className="admin-gate" onSubmit={(event) => { event.preventDefault(); void act("claimMasterAdmin", { password }); }}><span>⌁</span><strong>1짱 권한 가져오기</strong><p>비밀번호가 맞으면 기존 1짱 권한은 이 계정으로 이전됩니다.</p><input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} maxLength={64} placeholder="관리자 비밀번호" /><button className="primary-button" disabled={!password}>확인</button></form>
+          : !role ? <form className="admin-gate" onSubmit={(event) => { event.preventDefault(); void act("claimMasterAdmin", { password }); }}><span>⌁</span><strong>최고관리자 권한 가져오기</strong><p>비밀번호가 맞으면 기존 최고관리자 권한은 이 계정으로 이전됩니다.</p><input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} maxLength={64} placeholder="관리자 비밀번호" /><button className="primary-button" disabled={!password}>확인</button></form>
             : <>
               <div className="admin-session"><AdminBadge role={role} /><span>{role === "master" ? "코인 지급·권한 회수·밴을 포함한 모든 기능을 사용할 수 있습니다." : "접속자 확인·공지·경고·채팅 관리가 가능합니다."}</span></div>
               <div className="profile-tabs admin-tabs"><button className={tab === "operations" ? "active" : ""} onClick={() => setTab("operations")}>서버 운영</button><button className={tab === "players" ? "active" : ""} onClick={() => setTab("players")}>플레이어</button><button className={tab === "feedback" ? "active" : ""} onClick={() => setTab("feedback")}>피드백</button>{role === "master" && <button className={tab === "security" ? "active" : ""} onClick={() => setTab("security")}>보안</button>}</div>
