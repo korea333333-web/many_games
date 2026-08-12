@@ -19,14 +19,14 @@ const INSTANT_GAMES = new Set<GameId>(["gomoku", "go", "connect-four", "chess"])
 
 export function GameStage({ game, revision, playerId, viewerRole, onAction }: Props) {
   const [optimistic, setOptimistic] = useState<{ revision: number; game: GameEnvelope } | null>(null);
-  const [inspectedBoardSeed, setInspectedBoardSeed] = useState<number | null>(null);
+  const [inspectedResultSeed, setInspectedResultSeed] = useState<number | null>(null);
   const shownGame = optimistic?.revision === revision ? optimistic.game : game;
   const info = GAME_BY_ID[shownGame.gameId];
   const player = shownGame.players.find((item) => item.id === playerId);
   const spectator = viewerRole === "spectator" || !player;
   const winners = shownGame.players.filter((item) => shownGame.winnerIds.includes(item.id));
-  const hasInspectibleBoard = shownGame.gameId === "chess" || shownGame.gameId === "go";
-  const inspectingFinalBoard = hasInspectibleBoard && shownGame.phase === "finished" && inspectedBoardSeed === shownGame.seed;
+  const hasInspectibleResult = ["chess", "go", "uno", "davinci-code"].includes(shownGame.gameId);
+  const inspectingFinalResult = hasInspectibleResult && shownGame.phase === "finished" && inspectedResultSeed === shownGame.seed;
   const runAction = (command: Omit<GameCommand, "playerId">) => {
     if (INSTANT_GAMES.has(shownGame.gameId) && shownGame.phase === "playing" && !spectator) {
       const now = Date.now();
@@ -58,11 +58,14 @@ export function GameStage({ game, revision, playerId, viewerRole, onAction }: Pr
       </div>
       {shownGame.gameId === "davinci-code" && shownGame.state.comboEvent && <DavinciComboEffect game={shownGame} />}
       {shownGame.feedback && <AnswerFeedback game={shownGame} playerId={playerId} />}
-      {shownGame.phase === "finished" && !inspectingFinalBoard && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} onInspectBoard={hasInspectibleBoard ? () => setInspectedBoardSeed(shownGame.seed) : undefined} />}
-      {inspectingFinalBoard && (
+      {shownGame.phase === "finished" && !inspectingFinalResult && <VictoryOverlay gameId={shownGame.gameId} winners={winners.map((item) => item.name)} message={shownGame.message} onInspectResult={hasInspectibleResult ? () => setInspectedResultSeed(shownGame.seed) : undefined} />}
+      {inspectingFinalResult && (
         <div className="chess-final-board-banner" role="status">
-          <div><strong>{shownGame.gameId === "go" ? "계가 완료 · 마지막 판" : "체크메이트 · 마지막 판"}</strong><span>{shownGame.gameId === "go" ? `흑 ${shownGame.state.finalScore?.black ?? 0}집 · 백 ${shownGame.state.finalScore?.white ?? 0}집` : shownGame.state.lastMove?.san ? `마지막 수 ${shownGame.state.lastMove.san}` : "최종 기물 배치"}</span></div>
-          <button type="button" onClick={() => setInspectedBoardSeed(null)}>결과 다시 보기</button>
+          <div>
+            <strong>{shownGame.gameId === "go" ? "계가 완료 · 마지막 판" : shownGame.gameId === "chess" ? "체크메이트 · 마지막 판" : shownGame.gameId === "uno" ? "UNO · 마지막 패" : "CODE REVEALED · 마지막 패"}</strong>
+            <span>{shownGame.gameId === "go" ? `흑 ${shownGame.state.finalScore?.black ?? 0}집 · 백 ${shownGame.state.finalScore?.white ?? 0}집` : shownGame.gameId === "chess" ? shownGame.state.lastMove?.san ? `마지막 수 ${shownGame.state.lastMove.san}` : "최종 기물 배치" : shownGame.gameId === "uno" ? "모든 플레이어의 남은 카드를 공개합니다." : "모든 숫자와 조커를 공개합니다."}</span>
+          </div>
+          <button type="button" onClick={() => setInspectedResultSeed(null)}>결과 다시 보기</button>
         </div>
       )}
     </div>
@@ -116,9 +119,10 @@ const VICTORY_THEMES: Record<GameId, { kicker: string; icon: string }> = {
   "davinci-code": { kicker: "CODE CRACKED", icon: "#" },
 };
 
-function VictoryOverlay({ gameId, winners, message, onInspectBoard }: { gameId: GameId; winners: string[]; message: string; onInspectBoard?: () => void }) {
+function VictoryOverlay({ gameId, winners, message, onInspectResult }: { gameId: GameId; winners: string[]; message: string; onInspectResult?: () => void }) {
   const title = winners.length ? `${winners.join(", ")} 승리!` : "무승부!";
   const theme = VICTORY_THEMES[gameId];
+  const inspection = gameId === "go" ? { icon: "◉", label: "마지막 판 보기" } : gameId === "chess" ? { icon: "♟", label: "마지막 판 보기" } : gameId === "uno" ? { icon: "U", label: "마지막 패 보기" } : { icon: "#", label: "마지막 패 보기" };
   return (
     <div className={`victory-overlay victory-${gameId}`} role="status" aria-live="assertive">
       <div className="victory-particles" aria-hidden="true">{Array.from({ length: 16 }, (_, index) => <i key={index} />)}</div>
@@ -128,8 +132,8 @@ function VictoryOverlay({ gameId, winners, message, onInspectBoard }: { gameId: 
         <span className="eyebrow">{winners.length ? theme.kicker : "DRAW GAME"}</span>
         <h2>{title}</h2>
         <p>{message}</p>
-        {onInspectBoard && <button className="victory-board-button" type="button" onClick={onInspectBoard}>{gameId === "go" ? "◉" : "♟"} 마지막 판 보기</button>}
-        <small>{onInspectBoard ? "마지막 판을 확인한 뒤 같은 방으로 돌아갑니다." : "잠시 후 같은 방의 대기 화면으로 돌아갑니다."}</small>
+        {onInspectResult && <button className="victory-board-button" type="button" onClick={onInspectResult}>{inspection.icon} {inspection.label}</button>}
+        <small>{onInspectResult ? "마지막 상태를 확인한 뒤 같은 방으로 돌아갑니다." : "잠시 후 같은 방의 대기 화면으로 돌아갑니다."}</small>
       </div>
     </div>
   );
@@ -515,7 +519,14 @@ function Uno({ game, playerId, disabled, onAction }: GameViewProps) {
       <div className="uno-opponents">
         {game.players.filter((player) => player.id !== playerId).map((player) => (
           <div key={player.id} className={game.players[game.turn]?.id === player.id ? "active" : ""}>
-            <b>{player.name}</b><span className="uno-mini-hand">{(hands[player.id] ?? []).slice(0, 12).map((_, index) => <i key={index} />)}</span><small>{hands[player.id]?.length ?? 0}장</small>
+            <b>{player.name}</b>
+            {game.phase === "finished" ? (
+              <span className="uno-revealed-hand">
+                {(hands[player.id] ?? []).filter((card): card is UnoCard => Boolean(card)).map((card) => <UnoCardFace key={card.id} card={card} compact />)}
+                {(hands[player.id]?.length ?? 0) === 0 && <em>남은 카드 없음</em>}
+              </span>
+            ) : <span className="uno-mini-hand">{(hands[player.id] ?? []).slice(0, 12).map((_, index) => <i key={index} />)}</span>}
+            <small>{hands[player.id]?.length ?? 0}장</small>
           </div>
         ))}
       </div>
@@ -595,7 +606,7 @@ function DavinciCode({ game, playerId, disabled, onAction }: GameViewProps) {
   };
   return (
     <div className="davinci-game">
-      <div className="davinci-opponents">{opponents.map((player) => <section key={player.id} className={game.players[game.turn]?.id === player.id ? "active" : ""}><header><b>{player.name}</b><span>{(hands[player.id] ?? []).filter((tile) => tile.revealed).length}/{hands[player.id]?.length ?? 0} 공개</span></header><div>{(hands[player.id] ?? []).map((tile) => <button key={tile.id} disabled={disabled || !canGuess || tile.revealed} className={target?.tileId === tile.id ? "selected" : ""} onClick={() => setTarget({ playerId: player.id, tileId: tile.id })}><DavinciTileFace tile={tile} selectable={canGuess && !tile.revealed} /></button>)}</div></section>)}</div>
+      <div className="davinci-opponents">{opponents.map((player) => <section key={player.id} className={game.players[game.turn]?.id === player.id ? "active" : ""}><header><b>{player.name}</b><span>{game.phase === "finished" ? "모든 패 공개" : `${(hands[player.id] ?? []).filter((tile) => tile.revealed).length}/${hands[player.id]?.length ?? 0} 공개`}</span></header><div>{(hands[player.id] ?? []).map((tile) => <button key={tile.id} disabled={disabled || !canGuess || tile.revealed} className={target?.tileId === tile.id ? "selected" : ""} onClick={() => setTarget({ playerId: player.id, tileId: tile.id })}><DavinciTileFace tile={tile} selectable={canGuess && !tile.revealed} /></button>)}</div></section>)}</div>
       <div className="davinci-center"><div className="davinci-deck"><span>CODE</span><b>{game.state.deck.length}</b><small>남은 타일</small></div><div className="davinci-actions"><button disabled={disabled || !myTurn || game.state.hasDrawn || hasPendingJoker || game.phase === "finished"} onClick={() => onAction({ type: "DRAW_TILE" })}>타일 뽑기</button><button className="stop" disabled={disabled || !myTurn || !game.state.hasDrawn || !game.state.hasGuessed || hasPendingJoker || game.phase === "finished"} onClick={() => onAction({ type: "END_TURN" })}>추리 멈추기</button></div></div>
       <section className="davinci-mine"><header><b>내 암호</b><span>같은 숫자는 검정이 먼저 · 조커는 원하는 위치에 한 번만 배치</span></header><div>{(hands[playerId] ?? []).map((tile) => <DavinciTileFace key={tile.id} tile={tile} />)}</div></section>
       {target && <div className="davinci-picker"><div><b>이 타일은 무엇일까요?</b><div>{Array.from({ length: 12 }, (_, number) => <button key={number} onClick={() => guess(number)}>{number}</button>)}<button className="joker-guess" onClick={() => guess(-1)}>— 조커</button></div><button className="cancel" onClick={() => setTarget(null)}>취소</button></div></div>}

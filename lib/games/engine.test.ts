@@ -397,6 +397,8 @@ test("uno hides private cards and lets a player finish with a matching card", ()
   game = reduceGame(game, { type: "PLAY_CARD", playerId: "a", payload: { cardId: "winning-card" } });
   assert.equal(game.phase, "finished");
   assert.deepEqual(game.winnerIds, ["a"]);
+  const finishedProjection = projectGame(game, "a");
+  assert.ok(finishedProjection.state.hands.b[0]);
 });
 
 test("uno stacks +2 with +2 or +4, while +4 only accepts +4", () => {
@@ -465,6 +467,14 @@ test("davinci code hides opponent numbers and resolves wrong guesses", () => {
   assert.equal(typeof ownNumber.number, "number");
   assert.ok(projected.state.hands.b.every((tile: { number: number | null; isJoker: boolean; revealed: boolean }) => tile.revealed || (tile.number === null && !tile.isJoker)));
   assert.equal(projected.state.deck[0], null);
+
+  const finishedGame = structuredClone(game);
+  finishedGame.phase = "finished";
+  const finishedProjection = projectGame(finishedGame, "a");
+  assert.deepEqual(
+    finishedProjection.state.hands.b.map((tile: { number: number | null; isJoker: boolean }) => ({ number: tile.number, isJoker: tile.isJoker })),
+    game.state.hands.b.map((tile: { number: number | null; isJoker: boolean }) => ({ number: tile.number, isJoker: tile.isJoker })),
+  );
 
   const pending = game.state.hands.a.find((tile: { isJoker: boolean }) => !tile.isJoker);
   const target = game.state.hands.b.find((tile: { isJoker: boolean }) => !tile.isJoker);

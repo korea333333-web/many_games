@@ -1430,7 +1430,7 @@ export function projectGame(game: GameEnvelope, viewerId: string, now = Date.now
   if (projected.gameId === "uno") {
     const hands = projected.state.hands as Record<string, Array<UnoCard | null>>;
     for (const [playerId, hand] of Object.entries(hands)) {
-      if (playerId !== viewerId) hands[playerId] = Array(hand.length).fill(null);
+      if (projected.phase !== "finished" && playerId !== viewerId) hands[playerId] = Array(hand.length).fill(null);
     }
     projected.state.drawPile = Array(projected.state.drawPile.length).fill(null);
   }
@@ -1439,8 +1439,8 @@ export function projectGame(game: GameEnvelope, viewerId: string, now = Date.now
     for (const [playerId, hand] of Object.entries(hands)) {
       hands[playerId] = hand.map((tile) => ({
         ...tile,
-        number: playerId === viewerId || tile.revealed ? tile.number : null,
-        isJoker: playerId === viewerId || tile.revealed ? tile.isJoker : false,
+        number: projected.phase === "finished" || playerId === viewerId || tile.revealed ? tile.number : null,
+        isJoker: projected.phase === "finished" || playerId === viewerId || tile.revealed ? tile.isJoker : false,
       }));
     }
     projected.state.unplacedJokers = Object.fromEntries(

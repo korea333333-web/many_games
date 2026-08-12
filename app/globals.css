@@ -545,6 +545,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .uno-opponents small { color: var(--muted); font-size: 10px; }
 .uno-mini-hand { grid-column: 1 / -1; height: 17px; display: flex; padding-left: 5px; }
 .uno-mini-hand i { width: 12px; height: 17px; margin-left: -5px; border: 1px solid #aeb8d2; border-radius: 3px; background: repeating-linear-gradient(135deg, #263f80 0 3px, #192343 3px 6px); }
+.uno-revealed-hand { grid-column: 1 / -1; min-height: 76px; display: flex; align-items: end; gap: 4px; overflow-x: auto; padding: 2px 2px 5px; }
+.uno-revealed-hand .uno-card-face.compact { width: 48px; height: 68px; flex: 0 0 48px; border-width: 2px; border-radius: 9px; }
+.uno-revealed-hand .uno-card-face.compact small { left: 4px; top: 3px; font-size: 5px; }
+.uno-revealed-hand .uno-card-face.compact strong { font-size: 19px; }
+.uno-revealed-hand em { align-self: center; color: var(--lime); font-size: 10px; font-style: normal; font-weight: 850; }
 .uno-table { min-height: 220px; position: relative; display: flex; align-items: center; justify-content: center; gap: 30px; overflow: hidden; border: 1px solid rgba(255,255,255,.08); border-radius: 50% / 24%; background: radial-gradient(circle, rgba(33,94,73,.18), transparent 65%), #202a28; box-shadow: inset 0 0 40px rgba(0,0,0,.26); }
 .uno-draw-pile { width: 106px; height: 148px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 4px solid #dce5ff; border-radius: 15px; color: white; background: repeating-linear-gradient(135deg, #1e3a8a 0 8px, #172554 8px 16px); box-shadow: 5px 5px 0 #0b132b, 9px 9px 0 #415071; }
 .uno-draw-pile span { font-size: 11px; letter-spacing: .13em; }
